@@ -33,6 +33,11 @@ export async function createApp(): Promise<{ ctx: AppCtxValue; app: App }> {
       resetInteractionState: () => app.resetInteractionState(),
       openFilePicker: () => app.openFilePicker(),
       primeInteractiveAudio: () => app.primeInteractiveAudio(),
+      waitController: app.waitController,
+      stageLayout: app.stageLayout,
+      sheetView: app.sheetView,
+      toggleWait: () => app.toggleWait(),
+      toggleSheet: () => app.toggleSheet(),
     },
     app,
   }

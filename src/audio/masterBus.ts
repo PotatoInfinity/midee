@@ -23,7 +23,7 @@
 // Cached in a WeakMap keyed by the context object so a disposed context
 // doesn't pin its nodes.
 
-import { gainToDb, getContext, getDestination, type InputNode, Volume, WaveShaper } from 'tone'
+import { Gain, gainToDb, getContext, getDestination, type InputNode, Volume, WaveShaper } from 'tone'
 
 // Soft-clip ceiling. Identity up to SOFT_CLIP_KNEE (linear, -1.9 dB), then a
 // tanh curve that approaches but never reaches ±1. At most 0.4 dB of rounding
@@ -78,6 +78,45 @@ function busFor(ctx: object): Bus {
 /** Input node every sound source connects to, for the current Tone context. */
 export function getMasterBus(): InputNode {
   return busFor(getContext()).volume
+}
+
+// ── Music bus (instruments only) ───────────────────────────────────────────
+// Same path as the master bus, but hushed on explicit pause/seek/stop so the
+// reverb tails and release envelopes can't ring on for a second after the
+// transport stops. The metronome stays on the master bus so the click keeps
+// ticking through a pause. Wait-mode holds never hush — the user is mid-chord
+// and their presses must stay audible.
+const musicBuses = new WeakMap<object, Gain>()
+const musicDucked = new WeakMap<object, boolean>()
+
+function musicBusFor(ctx: object): Gain {
+  let bus = musicBuses.get(ctx)
+  if (!bus) {
+    bus = new Gain(1)
+    bus.connect(busFor(ctx).volume)
+    musicBuses.set(ctx, bus)
+  }
+  return bus
+}
+
+/** Input node every instrument connects to, for the current Tone context. */
+export function getMusicBus(): InputNode {
+  return musicBusFor(getContext())
+}
+
+/** True while the music bus is hushed (explicit pause/stop). Play/seek/live
+ *  input restore it. */
+export function isMusicDucked(): boolean {
+  return musicDucked.get(getContext()) ?? false
+}
+
+// ~50 ms fade — fast enough to feel instant on pause, slow enough to avoid a
+// click from a hard cut.
+export function setMusicDucked(ducked: boolean): void {
+  const ctx = getContext()
+  if ((musicDucked.get(ctx) ?? false) === ducked) return
+  musicDucked.set(ctx, ducked)
+  musicBusFor(ctx).gain.setTargetAtTime(ducked ? 0 : 1, ctx.currentTime, 0.015)
 }
 
 /** User volume 0–1, applied to the current context's bus and remembered for

@@ -4,7 +4,15 @@ import type { NoteMaterialId } from './NoteMaterial'
 import type { ParticleStyle } from './particleStyles'
 
 // Persisted in localStorage (`midee.theme`) — never rename.
-export type ThemeId = 'dark' | 'midnight' | 'neon' | 'sunset' | 'ocean' | NoteMaterialId
+export type ThemeId =
+  | 'dark'
+  | 'midnight'
+  | 'neon'
+  | 'sunset'
+  | 'ocean'
+  | 'clean'
+  | 'light'
+  | NoteMaterialId
 
 export interface Theme {
   id: ThemeId
@@ -32,6 +40,8 @@ export interface Theme {
 
   beatLineAlpha: number
   barLineAlpha: number
+  // Grid-line color; defaults to white (dark stages). Light stages override.
+  gridColor?: number
 
   // UI accent as a Pixi hex; CSS gets its string form via `accentCSS()`.
   accent: number
@@ -43,6 +53,15 @@ export interface Theme {
 // 0xRRGGBB → '#rrggbb'. Lives here so the renderer never imports UI code.
 export function hexToCSS(color: number): string {
   return `#${color.toString(16).padStart(6, '0')}`
+}
+
+// Luminance gate for picking contrasting UI colors. Anything paper-like or
+// brighter counts as light (the Light stage background is 0xf3efe6).
+export function isLightTheme(theme: Theme): boolean {
+  const r = (theme.background >> 16) & 0xff
+  const g = (theme.background >> 8) & 0xff
+  const b = theme.background & 0xff
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6
 }
 
 export function accentCSS(theme: Theme): string {
@@ -296,6 +315,56 @@ export const emberMistTheme: Theme = {
   trackColors: [0xedb17b, 0xe0a286, 0xf0c08b, 0xe9b198, 0xe7a775, 0xdfb996, 0xf3c896, 0xe2a78c],
 }
 
+// Flat, low-noise default: square-ish bars, no glow, muted cool palette,
+// faint grid, particles off (via recommendedParticles). Keeps the motion
+// readable without the neon clutter.
+export const cleanTheme: Theme = {
+  id: 'clean',
+  name: 'Clean',
+  background: 0x0a0c12,
+  noteRadius: 4,
+  noteGlowStrength: 0,
+  noteGlowDistance: 0,
+  whiteKey: 0xe9ebf2,
+  whiteKeyActive: 0xb9c2ff,
+  blackKey: 0x171a26,
+  blackKeyActive: 0x3d4470,
+  keyBorder: 0x232838,
+  nowLine: 0xffffff,
+  nowLineAlpha: 0.22,
+  nowLineGlow: 0xffffff,
+  beatLineAlpha: 0.02,
+  barLineAlpha: 0.05,
+  accent: 0x818cf8,
+  recommendedParticles: 'none',
+  trackColors: [0x8b9cf9, 0x7cc7f5, 0x6fd3c0, 0xa8b6e8, 0x9fb3c8, 0xc3b8f0, 0xd8c39a, 0x9fd6a4],
+}
+
+// Paper stage for the light/dark toggle: dark flat notes on warm paper,
+// dark grid lines, indigo accents.
+export const lightTheme: Theme = {
+  id: 'light',
+  name: 'Light',
+  background: 0xf3efe6,
+  noteRadius: 4,
+  noteGlowStrength: 0,
+  noteGlowDistance: 0,
+  whiteKey: 0xffffff,
+  whiteKeyActive: 0xd9e2ff,
+  blackKey: 0x2b2f3a,
+  blackKeyActive: 0x4a5578,
+  keyBorder: 0xd8d2c4,
+  nowLine: 0x3f43c8,
+  nowLineAlpha: 0.5,
+  nowLineGlow: 0x3f43c8,
+  beatLineAlpha: 0.05,
+  barLineAlpha: 0.1,
+  gridColor: 0x3a3f4b,
+  accent: 0x4f46e5,
+  recommendedParticles: 'none',
+  trackColors: [0x4338ca, 0x0369a1, 0x0f766e, 0x6d28d9, 0xbe123c, 0xb45309, 0x15803d, 0x475569],
+}
+
 // Historical order is immutable: old localStorage indices migrate through it.
 export const ALL_THEMES: readonly Theme[] = [
   darkTheme,
@@ -309,6 +378,8 @@ export const ALL_THEMES: readonly Theme[] = [
   opalTheme,
   liquidGlassTheme,
   emberMistTheme,
+  cleanTheme,
+  lightTheme,
 ]
 
 // Every user entry point (menu, cycling, persistence) uses this shipping roster.

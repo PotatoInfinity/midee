@@ -49,10 +49,13 @@ import { sessionToMidiFile } from './midi/SessionToMidi'
 import type { LearnController } from './modes/LearnController'
 import { setNextLiveOpts } from './modes/LiveMode'
 import { MODE_CAPTURES_LIVE, type ModeContext } from './modes/ModeController'
+import { StageLayout } from './play/stageLayout'
+import { PlayWaitController } from './play/waitController'
 import { PianoRollRenderer } from './renderer/PianoRollRenderer'
 import { ALL_PARTICLE_STYLES, PARTICLE_STYLES, type ParticleStyle } from './renderer/particleStyles'
-import { ALL_THEMES, accentCSS, THEMES, type Theme, type ThemeId } from './renderer/theme'
-import type { AppMode, AppStore } from './store/state'
+import { ALL_THEMES, accentCSS, hexToCSS, isLightTheme, THEMES, type Theme, type ThemeId } from './renderer/theme'
+import { SheetView } from './sheet/SheetView'
+import type { AppStore } from './store/state'
 import { watch } from './store/watch'
 import {
   categorizeMidiDevice,
@@ -85,6 +88,7 @@ import { PEDAL_HIDDEN, type PedalIndicatorState, pedalIndicatorState } from './u
 import { showError, showSuccess } from './ui/Toast'
 import { TrackPanel } from './ui/TrackPanel'
 import { installViewportClassSync } from './ui/utils'
+import { mountWaitHud } from './ui/WaitHud'
 import { whenIdle } from './whenIdle'
 
 // Total note count across all tracks — the content-size signal attached to
@@ -128,6 +132,10 @@ export class App {
   )
   private controls!: Controls
   trackPanel!: TrackPanel
+  waitController!: PlayWaitController
+  sheetView!: SheetView
+  stageLayout!: StageLayout
+  private disposeWaitHud: (() => void) | null = null
   private exportHandle = lazyHandle(() =>
     import('./ui/ExportModal').then(({ ExportModal }) => {
       const m = new ExportModal(this.overlay, {
@@ -328,6 +336,43 @@ export class App {
       input: this.inputBus,
     }
 
+    // Play wait + scrolling sheet (wait lives inside Play, no Learn tab).
+    this.waitController = new PlayWaitController({
+      services: this.services,
+      isTrackVisible: (id) => this.renderer.isTrackVisible(id),
+      onErrorFlash: (pitch, time) => this.sheetView?.flashError(pitch, time),
+      onPendingChange: (pending, accepted) => {
+        this.renderer.setPracticeHints(pending, accepted)
+        this.sheetView?.setPending(pending, accepted)
+      },
+    })
+    const appRoot = document.querySelector<HTMLElement>('#app')!
+    this.stageLayout = new StageLayout(appRoot, canvas, this.renderer, null)
+    this.sheetView = new SheetView(this.stageLayout.sheetBody, this.clock)
+    this.stageLayout.setSheetView(this.sheetView)
+    this.sheetView.onLoopChange = (region) => {
+      this.waitController.setLoop(region)
+      // Echo the committed region back so the band mirrors the controller —
+      // but never echo-clear a valid send: if the controller rejected it on a
+      // float/clamp edge, wiping the sheet is the band-vanish bug. The sheet
+      // only sends null-or->=min regions (same floor the controller
+      // enforces), so this stays an identity in practice.
+      this.sheetView.setLoop(this.waitController.loopRegion() ?? region)
+    }
+    // Suspend loop-wrap ticks while a drag is in flight — otherwise onTick
+    // seeks mid-gesture and yanks the time mapping under the pointer. The
+    // end hook also re-parks the playhead when the drag leaves it outside.
+    this.sheetView.onLoopEditChange = (editing) => {
+      if (editing) this.waitController.beginLoopEdit()
+      else this.waitController.endLoopEdit()
+    }
+    this.sheetView.onSeekRequest = (t) => {
+      this.seekPlayhead(t)
+    }
+    this.stageLayout.onVisibilityChange(() => {
+      // HUD offset vars are handled inside StageLayout.layout().
+    })
+
     // Wire the LivePerformanceBus fan-out sinks. Audio and visual-key
     // feedback fire unconditionally (every mode). Capture-mode sinks
     // (looper + session + particles) gate on MODE_CAPTURES_LIVE.
@@ -356,32 +401,20 @@ export class App {
       ),
     )
 
-    // Dropzone is shared across modes; its callbacks dispatch by the active
-    // mode so Learn keeps its MIDI isolated from Play's.
+    // Dropzone is shared across modes; Learn is dormant (no Learn tab) so
+    // every file lands in Play.
     this.dropzone = new DropZone(
       overlay,
       (file, source) => {
-        if (this.store.state.mode === 'learn') {
-          void this.ensureLearnController().then((c) => c.loadMidiFromFile(file, source))
-        } else {
-          void this.loadMidi(file, source)
-        }
+        void this.loadMidi(file, source)
       },
       () => this.enterLiveMode(),
       (sampleId) => {
-        if (this.store.state.mode === 'learn') {
-          void this.ensureLearnController().then((c) => c.loadSample(sampleId))
-        } else {
-          void this.loadSample(sampleId)
-        }
+        void this.loadSample(sampleId)
       },
-      () => this.store.setState('mode', 'learn'),
+      undefined,
       (recentId) => {
-        if (this.store.state.mode === 'learn') {
-          void this.ensureLearnController().then((c) => c.loadRecent(recentId))
-        } else {
-          void this.loadRecent(recentId)
-        }
+        void this.loadRecent(recentId)
       },
     )
 
@@ -389,7 +422,12 @@ export class App {
       container: overlay,
       services: this.services,
       onSeek: (t) => {
-        this.synth.seek(t)
+        if (this.store.state.mode === 'play' && this.waitController.enabled()) {
+          this.waitController.seek(t)
+        } else {
+          this.synth.seek(t)
+        }
+        this.synth.unduck()
         this.liveNotes.reset()
       },
       onZoom: (pps) => this.renderer.setZoom(pps),
@@ -405,7 +443,34 @@ export class App {
       },
       onOpenFile: () => this.openFilePicker(),
       onModeRequest: (mode) => this.requestMode(mode),
-      onLearnThis: () => this.enterLearnWithCurrentMidi(),
+      onToggleWait: () => this.toggleWait(),
+      waitEnabled: () => this.waitController.enabled(),
+      onToggleSheet: () => this.toggleSheet(),
+      sheetVisible: () => this.stageLayout.sheetVisible(),
+      onToggleTheme: () => this.toggleLightDark(),
+      onPlayToggle: () => {
+        if (this.store.state.mode !== 'play') return
+        if (this.waitController.enabled()) {
+          const wasPlaying = this.waitController.userWantsToPlay()
+          this.waitController.togglePlay()
+          if (wasPlaying) this.synth.hush()
+          return
+        }
+        const s = this.store.state.status
+        if (s === 'playing') {
+          this.clock.pause()
+          this.store.setState('status', 'paused')
+          this.synth.hush()
+          const dur = this.store.state.duration
+          trackEvent('playback_paused', {
+            position_s: Math.round(this.clock.currentTime),
+            position_pct: dur > 0 ? Math.round((this.clock.currentTime / dur) * 100) : 0,
+          })
+        } else if (s === 'paused' || s === 'ready') {
+          this.clock.play()
+          this.store.setState('status', 'playing')
+        }
+      },
       onHome: () => this.enterHomeMode(),
       onInstrumentCycle: () => this.cycleInstrument(),
       onParticleCycle: () => this.cycleParticleStyle(),
@@ -490,11 +555,35 @@ export class App {
       (id, enabled) => {
         this.synth.setTrackEnabled(id, enabled)
         trackEvent('track_toggled', { enabled })
+        // Wait steps + sheet follow the audible tracks (left/right/both is
+        // already handled here — no separate hand filter in the wait HUD).
+        this.waitController.syncTracks()
+        const midi = this.store.state.loadedMidi
+        if (midi && this.store.state.mode === 'play') {
+          this.sheetView.setData(
+            midi,
+            new Set(midi.tracks.filter((t) => this.renderer.isTrackVisible(t.id)).map((t) => t.id)),
+          )
+          this.sheetView.setLoop(this.waitController.loopRegion())
+        }
       },
       () => this.openFilePicker(),
       (id) => !this.synth.getDisabledTrackIds().has(id),
     )
     this.trackPanel.setTrigger(this.controls.tracksButton)
+
+    // Minimal wait HUD (separate Solid root). Visible only when wait is on in
+    // Play — the main HUD hides then, fixing the old overlapping controls.
+    // Loop lives entirely on the sheet.
+    this.disposeWaitHud = mountWaitHud(
+      overlay,
+      this.waitController,
+      this.services,
+      () =>
+        this.store.state.mode === 'play' &&
+        this.store.state.loadedMidi !== null &&
+        this.waitController.enabled(),
+    )
 
     this.instrumentMenu = new InstrumentMenu(this.controls.instrumentSlot, overlay)
     this.instrumentMenu.onSelect = (id) => this.setInstrumentById(id)
@@ -601,6 +690,11 @@ export class App {
         // milestones (and the playback_30s activation) for a piece nobody
         // played back.
         if (this.store.state.status === 'exporting') return
+        // File loop + wait transport live here so they work in normal play
+        // too, not just wait mode.
+        if (this.store.state.mode === 'play' && this.store.state.loadedMidi) {
+          this.waitController.onTick(t)
+        }
         this.syncPedalIndicator(t)
         // Engagement milestones are mode-agnostic (watched ≥30s counts as
         // a real user regardless of where the clock was ticking).
@@ -618,6 +712,10 @@ export class App {
       watch(
         () => this.store.state.status,
         (status) => {
+          // Any (re)start restores full level — a hushed bus must never
+          // swallow the downbeat. Live has no scheduled part (no midi), so
+          // this explicit unduck is what restores it there.
+          if (status === 'playing') this.synth.unduck()
           // Drives the synth for Play/Live only. Learn runs its own status
           // signal on `LearnState` and drives the synth from `LearnController`
           // so the two modes never race for control of the scheduler.
@@ -824,6 +922,16 @@ export class App {
     // Capture uses the bus's note-off path only — no duplicate captureNoteOff
     // here (routeNoteOn already fans off to subscribers).
     this.performanceBus.routeNoteOn(evt)
+    // Fresh attack restores full level (noodling while paused after an
+    // explicit hush must be heard). Belt-and-braces alongside the unduck
+    // inside SynthEngine.liveNoteOn.
+    this.synth.unduck()
+
+    // Play wait scoring (strict pauses, flow flashes red) — only in Play
+    // with wait on. Runs alongside the live audio so the user hears themselves.
+    if (mode === 'play' && this.waitController.enabled()) {
+      this.waitController.onNoteOn(evt)
+    }
 
     // Looper + session captures are live-performance concerns — practice
     // key-presses (Learn) should not pollute a saved session recording.
@@ -849,6 +957,10 @@ export class App {
     // Visual key-up always fires — the roll reflects hand motion even while
     // audio keeps ringing under the pedal.
     this.liveNotes.release(evt.pitch, evt.clockTime)
+
+    if (mode === 'play' && this.waitController.enabled()) {
+      this.waitController.onNoteOff(evt)
+    }
 
     // Route through the bus. When pedal is down the bus bookmarks the pitch;
     // when pedal lifts, bus subscribers fire for audio+visual release and
@@ -930,12 +1042,7 @@ export class App {
   // one binary search over the piece's holds.
   private syncPedalIndicator(time = this.clock.currentTime): void {
     const mode = this.store.state.mode
-    const piece =
-      mode === 'play'
-        ? this.store.state.loadedMidi
-        : mode === 'learn'
-          ? (this.learnControllerHandle.peek()?.learnState.state.loadedMidi ?? null)
-          : null
+    const piece = mode === 'play' ? this.store.state.loadedMidi : null
     const next = pedalIndicatorState({
       pieceHolds: piece?.pedal,
       time,
@@ -979,6 +1086,20 @@ export class App {
     // if it isn't, this just drops the stale schedule.
     this.synth.seek(this.clock.currentTime)
     this.liveNotes.reset()
+    // Wait steps + sheet follow the transposed pitches (fresh steps, same loop:
+    // only pitches move, so the current region still fits the same duration).
+    // <PlayMode/>'s effect already ran synchronously inside setTranspose above
+    // and preserved the loop across its own re-attach — save/restore here too
+    // so this second attach doesn't wipe it back to null.
+    const keepLoop = this.waitController.loopRegion()
+    this.waitController.attach(midi)
+    this.waitController.syncTracks()
+    if (keepLoop) this.waitController.setLoop(keepLoop)
+    this.sheetView.setData(
+      midi,
+      new Set(midi.tracks.filter((t) => this.renderer.isTrackVisible(t.id)).map((t) => t.id)),
+    )
+    this.sheetView.setLoop(this.waitController.loopRegion())
   }
 
   private async loadMidi(file: File, source: 'drag' | 'picker' = 'picker'): Promise<void> {
@@ -1059,7 +1180,26 @@ export class App {
     this.setThemeByIndex((this.themeIndex + 1) % THEMES.length, 'cycle')
   }
 
-  private setThemeByIndex(idx: number, method: 'cycle' | 'menu'): void {
+  private setThemeById(id: ThemeId, method: 'cycle' | 'menu' | 'toggle'): void {
+    const idx = THEMES.findIndex((t) => t.id === id)
+    if (idx >= 0) this.setThemeByIndex(idx, method)
+  }
+
+  // Light/dark quick toggle next to the Play/Live switch. Toggling to light
+  // remembers the current dark theme so toggling back restores it (rather
+  // than always landing on Dark).
+  toggleLightDark(): void {
+    const cur = THEMES[this.themeIndex]
+    if (!cur) return
+    if (cur.id === 'light') {
+      this.setThemeById(lastDarkThemeStore.load(), 'toggle')
+    } else {
+      lastDarkThemeStore.save(cur.id)
+      this.setThemeById('light', 'toggle')
+    }
+  }
+
+  private setThemeByIndex(idx: number, method: 'cycle' | 'menu' | 'toggle'): void {
     if (idx < 0 || idx >= THEMES.length) return
     this.themeIndex = idx
     const theme = THEMES[idx]!
@@ -1076,6 +1216,7 @@ export class App {
     // a paused preview cannot retain particles belonging to the previous theme.
     this.applyTheme(theme)
     themeStore.save(theme.id)
+    if (theme.id !== 'light') lastDarkThemeStore.save(theme.id)
     trackEvent('theme_changed', { theme: theme.name, theme_id: theme.id, method })
   }
 
@@ -1112,7 +1253,7 @@ export class App {
     this.setParticleByIndex((this.particleIndex + 1) % PARTICLE_STYLES.length, 'cycle')
   }
 
-  private setParticleByIndex(idx: number, method: 'cycle' | 'menu'): void {
+  private setParticleByIndex(idx: number, method: 'cycle' | 'menu' | 'toggle'): void {
     if (idx < 0 || idx >= PARTICLE_STYLES.length || idx === this.particleIndex) return
     this.particleIndex = idx
     this.applyParticleStyle()
@@ -1261,6 +1402,7 @@ export class App {
     this.synth.liveReleaseAll()
     this.store.setState('status', 'exporting')
     this.synth.pause()
+    this.synth.hush()
     // The metronome schedules clicks on its own look-ahead timer against the
     // *global* Tone context — left running, it would keep scheduling straight
     // through OfflineAudioRenderer's setContext() swap into the offline
@@ -1541,40 +1683,19 @@ export class App {
   }
 
   // Entry point for every "open MIDI" action — top strip button, track panel,
-  // play-mode entry without a loaded file, learn-hub upload CTA. Routes through
-  // the unified `MidiPickerModal` (drop / file picker / samples).
-  //
-  // `target` pins the destination at *call time*, not at file-pick time. This
-  // matters because `requestMode('play')` from Learn opens the picker without
-  // flipping the mode (we don't want a half-set-up Play surface flashing while
-  // the user is still choosing). If we read `store.state.mode` inside the
-  // file callback, it would still be 'learn' and the file would route to
-  // LearnController instead of Play. Explicit target avoids the race.
-  openFilePicker(target?: 'play' | 'learn'): void {
-    const resolveTarget = (): 'play' | 'learn' =>
-      target ?? (this.store.state.mode === 'learn' ? 'learn' : 'play')
+  // play-mode entry without a loaded file. Everything lands in Play (Learn
+  // is dormant — no Learn tab).
+  openFilePicker(): void {
     void this.midiPickerHandle.get().then((modal) => {
       modal.open({
         onFile: (file) => {
-          if (resolveTarget() === 'learn') {
-            void this.ensureLearnController().then((c) => c.loadMidiFromFile(file, 'picker'))
-          } else {
-            void this.loadMidi(file, 'picker')
-          }
+          void this.loadMidi(file, 'picker')
         },
         onSample: (id) => {
-          if (resolveTarget() === 'learn') {
-            void this.ensureLearnController().then((c) => c.loadSample(id))
-          } else {
-            void this.loadSample(id)
-          }
+          void this.loadSample(id)
         },
         onRecent: (id) => {
-          if (resolveTarget() === 'learn') {
-            void this.ensureLearnController().then((c) => c.loadRecent(id))
-          } else {
-            void this.loadRecent(id)
-          }
+          void this.loadRecent(id)
         },
       })
     })
@@ -1594,6 +1715,7 @@ export class App {
     if (this.store.state.mode === 'play' && this.store.state.status === 'playing') {
       this.clock.pause()
       this.store.setState('status', 'paused')
+      this.synth.hush()
     }
     // Chrome's first encoder of a session takes ~5 s to start; pay it while
     // the user is still choosing settings rather than inside the export.
@@ -1674,46 +1796,56 @@ export class App {
     }, 250)
   }
 
-  private requestMode(mode: Exclude<AppMode, 'home'>): void {
+  private requestMode(mode: 'play' | 'live'): void {
     if (mode === 'live') {
       this.enterLiveMode()
-      return
-    }
-    if (mode === 'learn') {
-      // Re-clicking Learn while already inside an exercise pops back to the
-      // hub. closeActiveExercise is idempotent (no-op when no runner) so this
-      // is safe to call regardless of prior state.
-      const lc = this.learnControllerHandle.peek()
-      if (this.store.state.mode === 'learn' && lc) {
-        lc.closeActiveExercise('abandoned')
-        return
-      }
-      this.store.setState('mode', 'learn')
       return
     }
     if (this.store.state.loadedMidi) {
       this.enterPlayMode()
       return
     }
-    // Pin the target — without it, the picker would read `state.mode` at
-    // file-pick time and (if we came here from Learn) route the file back
-    // into Learn instead of opening it in Play. The user clicked Play; honor
-    // that even if their mode hasn't flipped yet.
-    this.openFilePicker('play')
+    this.openFilePicker()
   }
 
-  // Hands the currently-loaded Play MIDI off to Learn and switches modes.
-  // Queueing on the controller (instead of relying on Learn re-reading
-  // `loadedMidi`) keeps Learn's MIDI store decoupled from Play's — the whole
-  // reason LearnController has its own `learnState` in the first place.
-  private enterLearnWithCurrentMidi(): void {
-    const midi = this.store.state.loadedMidi
-    if (!midi) return
-    track('learn_from_play', { duration_s: Math.round(midi.duration) })
-    void this.ensureLearnController().then((c) => {
-      c.queueMidi(midi)
-      this.store.setState('mode', 'learn')
-    })
+  // Wait lives inside Play: the top-bar clock toggles it without leaving Play.
+  toggleWait(): void {
+    if (this.store.state.mode !== 'play' || !this.store.state.loadedMidi) return
+    const wc = this.waitController
+    if (!wc.enabled()) {
+      wc.setEnabled(true)
+      if (this.store.state.status === 'playing') wc.play()
+      track('wait_enabled', { strict: wc.strict() })
+    } else {
+      const wasIntent = wc.userWantsToPlay()
+      wc.setEnabled(false)
+      // Leaving wait resumes the flow if the user still intends to play.
+      if (wasIntent && !this.clock.playing) {
+        this.clock.play()
+        this.store.setState('status', 'playing')
+      }
+      track('wait_disabled', {})
+    }
+  }
+
+  toggleSheet(): void {
+    if (this.store.state.mode !== 'play' || !this.store.state.loadedMidi) return
+    this.stageLayout.toggleSheet()
+  }
+
+  // Wheel / arrow-key navigation on the sheet scrubs the playhead.
+  private seekPlayhead(t: number): void {
+    if (this.store.state.mode !== 'play' || !this.store.state.loadedMidi) return
+    const dur = this.store.state.loadedMidi.duration
+    const clamped = Math.max(0, Math.min(dur, t))
+    if (this.store.state.mode === 'play' && this.waitController.enabled()) {
+      this.waitController.seek(clamped)
+    } else {
+      this.clock.seek(clamped)
+      this.synth.seek(clamped)
+      this.liveNotes.reset()
+    }
+    this.synth.unduck()
   }
 
   // Thin delegators: each flips the store and lets Solid's mode shell run
@@ -1907,9 +2039,7 @@ export class App {
     const mode = this.store.state.mode
 
     // Live performance — what the player and looper are pressing right now.
-    // Learn counts here too: the user plays along, so the chord readout should
-    // narrate their held notes (the visibility gate already allows non-play).
-    if (mode === 'live' || mode === 'home' || mode === 'learn') {
+    if (mode === 'live' || mode === 'home') {
       for (const [pitch] of this.liveNotes.heldNotes) set.add(pitch)
       for (const [pitch] of this.loopNotes.heldNotes) set.add(pitch)
       return set
@@ -1938,6 +2068,7 @@ export class App {
     this.clock.pause()
     this.clock.seek(0)
     this.synth.pause()
+    this.synth.hush()
     this.synth.seek(0)
     this.liveNotes.reset()
     this.loopNotes.reset()
@@ -1945,6 +2076,9 @@ export class App {
     this.sessionRec.cancel()
     this.metronome.stop()
     this.synth.liveReleaseAll()
+    this.waitController.detach()
+    this.renderer.setPracticeHints(null, null)
+    this.sheetView?.setPending(null, null)
     this.closeTransientOverlays()
   }
 
@@ -1972,10 +2106,20 @@ export class App {
     this.renderer.setTheme(theme)
     this.customizeMenu?.setTheme(this.themeIndex)
     this.trackPanel?.setTheme(theme)
+    this.controls.updateThemeId(theme.id)
+    this.sheetView.setTheme(theme)
     const accent = accentCSS(theme)
-    document.documentElement.style.setProperty('--accent', accent)
-    document.documentElement.style.setProperty('--accent-soft', `${accent}2e`)
-    document.documentElement.style.setProperty('--accent-glow', `${accent}66`)
+    const root = document.documentElement.style
+    root.setProperty('--accent', accent)
+    root.setProperty('--accent-soft', `${accent}2e`)
+    root.setProperty('--accent-glow', `${accent}66`)
+    // Sheet pane + header follow the stage (dark glass vs paper).
+    const light = isLightTheme(theme)
+    document.body.classList.toggle('theme-light', light)
+    root.setProperty('--sheet-bg', hexToCSS(theme.background))
+    root.setProperty('--sheet-fg', light ? 'rgba(35,40,50,0.65)' : 'rgba(255,255,255,0.55)')
+    root.setProperty('--sheet-fg-strong', light ? '#232833' : '#ffffff')
+    root.setProperty('--sheet-hover', light ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)')
   }
 
   private showLoading(): void {
@@ -2016,6 +2160,11 @@ export class App {
     this.renderer.canvas.removeEventListener('pointerup', this.onCanvasPointerUp)
     this.renderer.canvas.removeEventListener('pointercancel', this.onCanvasPointerUp)
     this.renderer.canvas.removeEventListener('pointerleave', this.onCanvasPointerUp)
+    this.disposeWaitHud?.()
+    this.disposeWaitHud = null
+    this.waitController.dispose()
+    this.sheetView.dispose()
+    this.stageLayout.dispose()
     this.dropzone.dispose()
     this.controls.dispose()
     this.kbdResizer.dispose()
@@ -2038,9 +2187,15 @@ export class App {
 // migration from the old `midee.*Index` integer keys (see `idPersisted`).
 const themeStore = idPersisted<ThemeId>(
   'midee.theme',
-  'sunset',
+  'clean',
   THEMES.map((t) => t.id),
   { key: 'midee.themeIndex', ids: ALL_THEMES.map((t) => t.id) },
+)
+// Remembers the last dark theme so the light/dark toggle restores it.
+const lastDarkThemeStore = idPersisted<ThemeId>(
+  'midee.lastDarkTheme',
+  'dark',
+  THEMES.filter((t) => t.id !== 'light').map((t) => t.id),
 )
 // New visitors default to Upright (1.2 MB of self-hosted samples) so first-load
 // is fast. Returning users keep whatever they had, including Salamander Grand.
@@ -2052,7 +2207,7 @@ const instrumentStore = idPersisted<InstrumentId>(
 )
 const particleStore = idPersisted<ParticleStyle>(
   'midee.particle',
-  'embers',
+  'none',
   PARTICLE_STYLES.map((s) => s.id),
   { key: 'midee.particleIndex', ids: ALL_PARTICLE_STYLES.map((s) => s.id) },
 )

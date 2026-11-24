@@ -1,4 +1,4 @@
-// Factories only touch the current Tone context via `getMasterBus()` (volume
+// Factories only touch the current Tone context via `getMusicBus()` (volume
 // + soft-clip ceiling, one per context — see masterBus.ts), so they work
 // identically inside `Tone.Offline(...)` for export rendering. Nothing here
 // may connect to `getDestination()` directly: that bypasses the ceiling.
@@ -15,7 +15,7 @@ import {
   Synth,
 } from 'tone'
 import type { MessageKey } from '../i18n'
-import { getMasterBus } from './masterBus'
+import { getMusicBus } from './masterBus'
 
 export type InstrumentId =
   | 'piano'
@@ -216,7 +216,7 @@ async function createPiano(): Promise<InstrumentRuntime> {
     // -6 dB keeps ff playable through the ceiling without flattening the
     // layering that makes it a grand.
     inst.strings.value = -6
-    inst.connect(getMasterBus())
+    inst.connect(getMusicBus())
     await inst.load()
     return {
       triggerAttack: (note, time, velocity) => inst.keyDown({ note, velocity, time }),
@@ -238,7 +238,7 @@ function createTriangleFallback(): InstrumentRuntime {
   const synth = new PolySynth(Synth, {
     oscillator: { type: 'triangle' },
     envelope: { attack: 0.005, decay: 0.08, sustain: 0.55, release: 0.5 },
-  }).connect(getMasterBus())
+  }).connect(getMusicBus())
   return wrapPolySynth(synth)
 }
 
@@ -253,7 +253,7 @@ function createRhodes(): InstrumentRuntime {
   })
   synth.volume.value = -2
   const chorus = new Chorus(0.8, 2.5, 0.35).start()
-  synth.chain(chorus, getMasterBus())
+  synth.chain(chorus, getMusicBus())
   return wrapPolySynth(synth)
 }
 
@@ -265,7 +265,7 @@ function createPad(): InstrumentRuntime {
   synth.volume.value = -10
   const filter = new Filter({ frequency: 1600, type: 'lowpass', rolloff: -12 })
   const reverb = makeReverb({ decay: 3.5, wet: 0.35 })
-  synth.chain(filter, reverb, getMasterBus())
+  synth.chain(filter, reverb, getMusicBus())
   return wrapPolySynth(synth)
 }
 
@@ -277,7 +277,7 @@ function createPluck(): InstrumentRuntime {
   synth.volume.value = -6
   const filter = new Filter({ frequency: 3800, type: 'highpass', rolloff: -12, Q: 0.5 })
   const lowpass = new Filter({ frequency: 6500, type: 'lowpass', rolloff: -24 })
-  synth.chain(filter, lowpass, getMasterBus())
+  synth.chain(filter, lowpass, getMusicBus())
   return wrapPolySynth(synth)
 }
 
@@ -294,7 +294,7 @@ function createMarimba(): InstrumentRuntime {
   })
   synth.volume.value = -5
   const reverb = makeReverb({ decay: 1.2, wet: 0.2 })
-  synth.chain(reverb, getMasterBus())
+  synth.chain(reverb, getMusicBus())
   return wrapPolySynth(synth)
 }
 
@@ -312,7 +312,7 @@ function createBells(): InstrumentRuntime {
   })
   synth.volume.value = -8
   const reverb = makeReverb({ decay: 4.0, wet: 0.4 })
-  synth.chain(reverb, getMasterBus())
+  synth.chain(reverb, getMusicBus())
   return wrapPolySynth(synth)
 }
 
@@ -326,7 +326,7 @@ function createStrings(): InstrumentRuntime {
   synth.volume.value = -12
   const filter = new Filter({ frequency: 2400, type: 'lowpass', rolloff: -12 })
   const reverb = makeReverb({ decay: 2.4, wet: 0.32 })
-  synth.chain(filter, reverb, getMasterBus())
+  synth.chain(filter, reverb, getMusicBus())
   return wrapPolySynth(synth)
 }
 
@@ -341,7 +341,7 @@ function createBass(): InstrumentRuntime {
   // hide behind — measured +7 dB over full scale at -4 (headroom bench).
   synth.volume.value = -13
   const filter = new Filter({ frequency: 1200, type: 'lowpass', rolloff: -24, Q: 0.8 })
-  synth.chain(filter, getMasterBus())
+  synth.chain(filter, getMusicBus())
   return wrapPolySynth(synth)
 }
 
@@ -442,7 +442,7 @@ async function createSampled(
   })
   if (spec.volumeDb !== undefined) sampler.volume.value = spec.volumeDb
   if (chain) chain(sampler)
-  else sampler.connect(getMasterBus())
+  else sampler.connect(getMusicBus())
 
   // Buffers are already decoded and passed by reference, so Sampler has
   // nothing async to wait on — no Tone.loaded() race needed.
@@ -564,7 +564,7 @@ async function createViolin(): Promise<InstrumentRuntime> {
   try {
     return await createSampled(SAMPLED_SPECS.violin!, (s) => {
       const reverb = makeReverb({ decay: 1.8, wet: 0.22 })
-      s.chain(reverb, getMasterBus())
+      s.chain(reverb, getMusicBus())
     })
   } catch (err) {
     console.warn('Violin samples unavailable, falling back to synth strings', err)
@@ -576,7 +576,7 @@ async function createFlute(): Promise<InstrumentRuntime> {
   try {
     return await createSampled(SAMPLED_SPECS.flute!, (s) => {
       const reverb = makeReverb({ decay: 1.4, wet: 0.18 })
-      s.chain(reverb, getMasterBus())
+      s.chain(reverb, getMusicBus())
     })
   } catch (err) {
     console.warn('Flute samples unavailable, falling back to synth', err)
@@ -595,7 +595,7 @@ async function createUpright(): Promise<InstrumentRuntime> {
       // Slight room reverb — the upright sits "in the room" vs the Grand's
       // concert stage, but neither wants heavy ambience.
       const reverb = makeReverb({ decay: 1.4, wet: 0.15 })
-      s.chain(reverb, getMasterBus())
+      s.chain(reverb, getMusicBus())
     })
   } catch (err) {
     console.warn('Upright samples unavailable, falling back to Grand', err)
@@ -623,7 +623,7 @@ function createDigitalPiano(): InstrumentRuntime {
   synth.volume.value = -4
   const chorus = new Chorus(1.1, 2.0, 0.2).start()
   const reverb = makeReverb({ decay: 1.1, wet: 0.14 })
-  synth.chain(chorus, reverb, getMasterBus())
+  synth.chain(chorus, reverb, getMusicBus())
   return wrapPolySynth(synth)
 }
 
@@ -633,7 +633,7 @@ async function createGuitar(): Promise<InstrumentRuntime> {
     // artefacts are minimal and the plucked attack reads cleanly.
     return await createSampled(SAMPLED_SPECS.guitar!, (s) => {
       const reverb = makeReverb({ decay: 1.2, wet: 0.14 })
-      s.chain(reverb, getMasterBus())
+      s.chain(reverb, getMusicBus())
     })
   } catch (err) {
     console.warn('Guitar samples unavailable, falling back to synth pluck', err)

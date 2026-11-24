@@ -3,6 +3,9 @@ import type { AppServices } from '../core/services'
 import type { ComputerKeyboardInput } from '../midi/ComputerKeyboardInput'
 import type { MidiInputManager } from '../midi/MidiInputManager'
 import type { LearnController } from '../modes/LearnController'
+import type { StageLayout } from '../play/stageLayout'
+import type { PlayWaitController } from '../play/waitController'
+import type { SheetView } from '../sheet/SheetView'
 import type { DropZone } from '../ui/DropZone'
 import type { TrackPanel } from '../ui/TrackPanel'
 import type { AppStore } from './state'
@@ -28,6 +31,12 @@ export interface AppCtxValue {
   resetInteractionState: () => void
   openFilePicker: () => void
   primeInteractiveAudio: () => void
+  // Play wait + sheet (wait lives inside Play, no Learn tab).
+  waitController: PlayWaitController
+  stageLayout: StageLayout
+  sheetView: SheetView
+  toggleWait: () => void
+  toggleSheet: () => void
 }
 
 export const AppCtx = createContext<AppCtxValue>()

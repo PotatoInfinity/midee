@@ -1,5 +1,4 @@
 import type { ExerciseDescriptor } from '../core/Exercise'
-import { intervalsDescriptor } from '../exercises/intervals'
 import { playAlongDescriptor } from '../exercises/play-along'
 import { sightReadingDescriptor } from '../exercises/sight-reading'
 
@@ -10,11 +9,7 @@ import { sightReadingDescriptor } from '../exercises/sight-reading'
 // Add a descriptor by importing it here and pushing it into `CATALOG`. The
 // registration side-effect is intentional — it keeps the hub a thin view
 // over this array and lets exercises live in self-contained folders.
-export const CATALOG: ExerciseDescriptor[] = [
-  playAlongDescriptor,
-  intervalsDescriptor,
-  sightReadingDescriptor,
-]
+export const CATALOG: ExerciseDescriptor[] = [playAlongDescriptor, sightReadingDescriptor]
 
 export function findExercise(id: string): ExerciseDescriptor | undefined {
   return CATALOG.find((d) => d.id === id)

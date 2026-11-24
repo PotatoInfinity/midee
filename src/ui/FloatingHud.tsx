@@ -160,46 +160,28 @@ export function FloatingHud(props: FloatingHudProps) {
     rootEl.style.setProperty('--hud-dy', `${offsetY()}px`)
   }
 
-  // Cached CSS layout vars — updated once on mount and on resize.
-  // Keep in step with .float-hud--top in main.css.
-  const TOP_ANCHOR_Y = 84
-
-  let cachedKbdH = 120
-  let cachedHudGap = 14
-
-  function readLayoutVars(): void {
-    const rs = getComputedStyle(document.documentElement)
-    cachedKbdH = parseFloat(rs.getPropertyValue('--keyboard-h')) || 120
-    cachedHudGap = parseFloat(rs.getPropertyValue('--hud-gap')) || 14
-  }
-
+  // Free placement: HUDs can be dragged anywhere on screen — over the
+  // keyboard, the sheet, or the roll. Instead of mirroring the CSS anchor
+  // math (which drifts whenever sheet insets, safe-areas, or anchors
+  // change), measure the rendered box and nudge the offset so the pill
+  // stays fully on-screen. This works for both anchors and any overlay.
   function clampOffset(): void {
     if (!rootEl) return
+    applyOffset()
     const rect = rootEl.getBoundingClientRect()
-    if (rect.width === 0 || rect.height === 0) {
+    if (rect.width === 0 && rect.height === 0) return
+    const m = 8
+    let cx = 0
+    let cy = 0
+    if (rect.left < m) cx = m - rect.left
+    else if (rect.right > window.innerWidth - m) cx = window.innerWidth - m - rect.right
+    if (rect.top < m) cy = m - rect.top
+    else if (rect.bottom > window.innerHeight - m) cy = window.innerHeight - m - rect.bottom
+    if (cx !== 0 || cy !== 0) {
+      setOffsetX(offsetX() + cx)
+      setOffsetY(offsetY() + cy)
       applyOffset()
-      return
     }
-    const kh = cachedKbdH
-    const gap = cachedHudGap
-    const defaultLeft = (window.innerWidth - rect.width) / 2
-    // Mirrors the CSS anchor below; TOP_ANCHOR_Y clears the top strip, which is
-    // also why the clamp floor below is 80.
-    const defaultTop =
-      props.anchor === 'top' ? TOP_ANCHOR_Y : window.innerHeight - kh - gap - rect.height
-    const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
-    const nextLeft = clamp(
-      defaultLeft + offsetX(),
-      12,
-      Math.max(12, window.innerWidth - rect.width - 12),
-    )
-    const nextTop = clamp(
-      defaultTop + offsetY(),
-      80,
-      Math.max(80, window.innerHeight - kh - rect.height - 12),
-    )
-    setOffsetX(nextLeft - defaultLeft)
-    setOffsetY(nextTop - defaultTop)
   }
 
   function onPointerMove(e: PointerEvent): void {
@@ -249,12 +231,10 @@ export function FloatingHud(props: FloatingHudProps) {
   // ── Lifecycle ────────────────────────────────────────────────────────────
 
   function onResize(): void {
-    readLayoutVars()
     clampOffset()
   }
 
   onMount(() => {
-    readLayoutVars()
     applyOffset()
     wake()
     window.addEventListener('resize', onResize)

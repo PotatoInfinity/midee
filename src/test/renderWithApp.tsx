@@ -34,6 +34,7 @@ function fakeRenderer(): AppServices['renderer'] {
     loadMidi: vi.fn(),
     setVisible: vi.fn(),
     setLiveNotesVisible: vi.fn(),
+    isTrackVisible: vi.fn(() => true),
   } as unknown as AppServices['renderer']
 }
 
@@ -81,6 +82,26 @@ function makeFakeCtx(): AppCtxValue {
     resetInteractionState: vi.fn(),
     openFilePicker: vi.fn(),
     primeInteractiveAudio: vi.fn(),
+    waitController: {
+      attach: vi.fn(),
+      detach: vi.fn(),
+      setEnabled: vi.fn(),
+      enabled: () => false,
+      loopRegion: () => null,
+    } as unknown as AppCtxValue['waitController'],
+    stageLayout: {
+      showSheet: vi.fn(),
+      hideSheet: vi.fn(),
+      toggleSheet: vi.fn(),
+      sheetVisible: () => false,
+    } as unknown as AppCtxValue['stageLayout'],
+    sheetView: {
+      setData: vi.fn(),
+      setLoop: vi.fn(),
+      setPending: vi.fn(),
+    } as unknown as AppCtxValue['sheetView'],
+    toggleWait: vi.fn(),
+    toggleSheet: vi.fn(),
   }
 }
 

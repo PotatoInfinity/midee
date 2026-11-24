@@ -24,13 +24,21 @@ export interface TopStripProps {
   midiMenuLabel: () => string
   pedal: () => { visible: boolean; down: boolean }
   dim: () => boolean
+  // Wait mode lives inside Play (no separate Learn tab). Top bar stays
+  // identical when wait is on — the clock pill just lights up.
+  waitEnabled: () => boolean
+  sheetVisible: () => boolean
+  // Light/dark quick toggle next to the mode switch.
+  isLight: () => boolean
   onHome: () => void
-  onMode: (m: Exclude<AppMode, 'home'>) => void
+  onMode: (m: 'play' | 'live') => void
   onOpenFile: () => void
   onTracks: () => void
   onMidi: () => void
   onRecord: () => void
-  onLearnThis: () => void
+  onToggleWait: () => void
+  onToggleSheet: () => void
+  onToggleTheme: () => void
   registerEl: (el: HTMLElement) => void
   registerTracksBtn: (el: HTMLButtonElement) => void
 }
@@ -108,7 +116,7 @@ export interface KeyHintProps {
 export function TopStripView(props: TopStripProps) {
   const activeMode = (): string => {
     const m = props.mode()
-    if (m === 'play' || m === 'live' || m === 'learn') return m
+    if (m === 'play' || m === 'live') return m
     return 'none'
   }
 
@@ -119,14 +127,14 @@ export function TopStripView(props: TopStripProps) {
   // own offsetLeft all share the same offsetParent (the switch), so their
   // difference is the precise translation regardless of border/padding.
   let thumbEl: HTMLSpanElement | undefined
-  const segEls: Partial<Record<'play' | 'live' | 'learn', HTMLButtonElement>> = {}
+  const segEls: Partial<Record<'play' | 'live', HTMLButtonElement>> = {}
 
   // animate=false snaps without a slide — used for the first paint and for
   // resize/font reflows, where a sliding thumb would look like a glitch.
   const positionThumb = (animate = true): void => {
     if (!thumbEl) return
     const m = activeMode()
-    const seg = m === 'play' || m === 'live' || m === 'learn' ? segEls[m] : undefined
+    const seg = m === 'play' || m === 'live' ? segEls[m] : undefined
     if (!seg) {
       thumbEl.style.opacity = '0'
       return
@@ -183,12 +191,13 @@ export function TopStripView(props: TopStripProps) {
         innerHTML={`${icons.wordmark()}<span class="ts-home-name">midee</span>`}
       />
 
-      <div
-        class="ts-mode-switch"
-        role="tablist"
-        aria-label={t('hud.aria.appMode')}
-        data-active={activeMode()}
-      >
+      <div class="ts-mode-cluster">
+        <div
+          class="ts-mode-switch"
+          role="tablist"
+          aria-label={t('hud.aria.appMode')}
+          data-active={activeMode()}
+        >
         <button
           class="ts-mode-seg"
           classList={{ 'is-active': props.mode() === 'play' }}
@@ -217,21 +226,21 @@ export function TopStripView(props: TopStripProps) {
           <span class="ts-mode-icon" aria-hidden="true" innerHTML={icons.modeLive()} />
           <span class="ts-mode-label">{t('topStrip.mode.live.label')}</span>
         </button>
-        <button
-          class="ts-mode-seg"
-          classList={{ 'is-active': props.mode() === 'learn' }}
-          id="ts-mode-learn"
-          ref={(el) => (segEls.learn = el)}
-          type="button"
-          role="tab"
-          aria-selected={props.mode() === 'learn' ? 'true' : 'false'}
-          data-tip={t('topStrip.modeLearn')}
-          onClick={() => props.onMode('learn')}
-        >
-          <span class="ts-mode-icon" aria-hidden="true" innerHTML={icons.practice()} />
-          <span class="ts-mode-label">{t('topStrip.mode.learn.label')}</span>
-        </button>
         <span class="ts-mode-thumb" aria-hidden="true" ref={(el) => (thumbEl = el)} />
+      </div>
+      <button
+        class="ts-pill"
+        id="ts-theme"
+        type="button"
+        aria-label={t('topStrip.theme.aria')}
+        aria-pressed={props.isLight() ? 'true' : 'false'}
+        data-tip={
+          props.isLight() ? t('topStrip.theme.toDark.tip') : t('topStrip.theme.toLight.tip')
+        }
+        onClick={() => props.onToggleTheme()}
+      >
+        <span aria-hidden="true" innerHTML={props.isLight() ? icons.moon() : icons.sun()} />
+      </button>
       </div>
 
       <div class="ts-status" id="ts-status" aria-live="polite">
@@ -240,7 +249,7 @@ export function TopStripView(props: TopStripProps) {
           <span class="ts-status-kicker" id="ts-context-kicker">
             {props.context().kicker}
           </span>
-          <span class="ts-status-title" id="ts-context-title" title={props.context().title}>
+          <span class="ts-status-title" id="ts-context-title" title={props.context().title} style={{ 'line-height': '1.2', 'letter-spacing': '0.01em' }}>
             {props.context().title}
           </span>
         </span>
@@ -250,7 +259,7 @@ export function TopStripView(props: TopStripProps) {
           <span />
           <span />
         </span>
-        {/* Sustain-pedal light: the piece's pedal in Play/Learn, the player's
+        {/* Sustain-pedal light: the piece's pedal in Play, the player's
             own anywhere. A status glyph next to the title, not a control —
             no border, no hover, state carried by `data-down` so the
             aria-live status region doesn't announce every press. Hidden
@@ -277,7 +286,7 @@ export function TopStripView(props: TopStripProps) {
           data-tip={t('topStrip.openMidi')}
           onClick={() => props.onOpenFile()}
         >
-          <span innerHTML={icons.upload()} />
+          <span aria-hidden="true" innerHTML={icons.upload()} />
           <span>{t('home.cta.openMidi')}</span>
         </button>
         {/* Appearance/Customize is pinned near the start of the right cluster
@@ -297,22 +306,38 @@ export function TopStripView(props: TopStripProps) {
           data-tip={t('topStrip.tracks')}
           onClick={() => props.onTracks()}
         >
-          <span innerHTML={icons.tracks()} />
+          <span aria-hidden="true" innerHTML={icons.tracks()} />
           <span>{t('topStrip.tracks')}</span>
         </button>
         <button
-          class="ts-pill ts-pill--file"
+          class="ts-pill ts-pill--file ts-pill--wait"
           classList={{
             hidden: !(props.mode() === 'play' && props.hasFile() && !props.isLoadingFile()),
+            'ts-pill--on': props.waitEnabled(),
           }}
-          id="ts-learn-this"
+          id="ts-wait"
           type="button"
-          aria-label={t('topStrip.learnThis.aria')}
-          data-tip={t('topStrip.learnThis.tip')}
-          onClick={() => props.onLearnThis()}
+          aria-label={t('topStrip.wait.aria')}
+          aria-pressed={props.waitEnabled() ? 'true' : 'false'}
+          data-tip={t('topStrip.wait.tip')}
+          onClick={() => props.onToggleWait()}
         >
-          <span innerHTML={icons.practice()} />
-          <span>{t('topStrip.learnThis.label')}</span>
+          <span aria-hidden="true" innerHTML={icons.waitClock()} />
+        </button>
+        <button
+          class="ts-pill ts-pill--file ts-pill--sheet"
+          classList={{
+            hidden: !(props.mode() === 'play' && props.hasFile() && !props.isLoadingFile()),
+            'ts-pill--on': props.sheetVisible(),
+          }}
+          id="ts-sheet"
+          type="button"
+          aria-label={t('wait.sheetShowTip')}
+          aria-pressed={props.sheetVisible() ? 'true' : 'false'}
+          data-tip={props.sheetVisible() ? t('wait.sheetHideTip') : t('wait.sheetShowTip')}
+          onClick={() => props.onToggleSheet()}
+        >
+          <span aria-hidden="true" innerHTML={icons.sheet()} />
         </button>
         <span id="ts-instrument-slot" />
         <div class="ts-sep" aria-hidden="true" />
@@ -326,8 +351,12 @@ export function TopStripView(props: TopStripProps) {
           data-tip={t('topStrip.midi')}
           onClick={() => props.onMidi()}
         >
-          <span innerHTML={icons.midi()} />
-          <span id="ts-menu-midi-label" class="ts-midi-label">
+          <span aria-hidden="true" innerHTML={icons.midi()} />
+          <span
+            id="ts-menu-midi-label"
+            class="ts-midi-label"
+            style={{ 'font-variant-numeric': 'tabular-nums', 'letter-spacing': '0.01em' }}
+          >
             {props.midiPillLabel()}
           </span>
         </button>
@@ -342,7 +371,7 @@ export function TopStripView(props: TopStripProps) {
           data-tip={t('topStrip.export')}
           onClick={() => props.onRecord()}
         >
-          <span innerHTML={icons.export()} />
+          <span aria-hidden="true" innerHTML={icons.export()} />
           <span>{t('topStrip.export.label')}</span>
         </button>
       </div>

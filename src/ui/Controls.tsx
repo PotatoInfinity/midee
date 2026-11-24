@@ -27,7 +27,6 @@ import {
 } from './ControlsView'
 import { DragCoachmark } from './DragCoachmark'
 import { ExportCoachmark } from './ExportCoachmark'
-import { isLearnCoachmarkSeen, LearnCoachmark } from './LearnCoachmark'
 import { PEDAL_HIDDEN, type PedalIndicatorState } from './pedalIndicator'
 
 const SKIP_SECONDS = 10
@@ -59,8 +58,13 @@ export interface ControlsOptions {
   onOpenTracks?: () => void
   onRecord?: () => void
   onOpenFile?: () => void
-  onLearnThis?: () => void
-  onModeRequest?: (mode: Exclude<AppMode, 'home'>) => void
+  onToggleWait?: () => void
+  waitEnabled?: () => boolean
+  onToggleSheet?: () => void
+  sheetVisible?: () => boolean
+  onToggleTheme?: () => void
+  onPlayToggle?: () => void
+  onModeRequest?: (mode: 'play' | 'live') => void
   onHome?: () => void
   onInstrumentCycle?: () => void
   onParticleCycle?: () => void
@@ -118,6 +122,7 @@ export class Controls {
   private readonly setVolume: (v: number) => void
   private readonly setSpeed: (v: number) => void
   private readonly setZoom: (v: number) => void
+  private readonly setThemeIdSig: (v: string) => void
 
   // Document-level listeners bound at construction.
   private onMouseMoveDoc = (): void => {
@@ -149,10 +154,6 @@ export class Controls {
     const [dimTopStrip, setDimTopStrip] = createSignal(false)
     const [hudIdle, setHudIdle] = createSignal(false)
     const [hudHasDragged, setHudHasDragged] = createSignal(loadHudHasDragged())
-    // Reactive mirror of the learn-coachmark "seen" flag so the drag
-    // coachmark's eligibility re-evaluates the moment Learn fires (the
-    // localStorage read alone is not reactive).
-    const [learnCoachmarkSeen, setLearnCoachmarkSeen] = createSignal(isLearnCoachmarkSeen())
     const [instrumentLoading, setInstrumentLoading] = createSignal(false)
     const [keyHintCollapsed, setKeyHintCollapsed] = createSignal(loadKeyHintHidden())
     // Session-only: the HUD always starts open on load (not persisted).
@@ -162,6 +163,7 @@ export class Controls {
     const [speed, setSpeedSig] = createSignal(store.state.speed ?? 1)
     const [transpose, setTransposeSig] = createSignal(store.state.transpose ?? 0)
     const [zoom, setZoomSig] = createSignal(ZOOM_DEFAULT)
+    const [themeId, setThemeId] = createSignal('')
 
     const [uiStore, setUi] = createStore<UiStoreShape>({
       context: {
@@ -190,6 +192,7 @@ export class Controls {
     this.setVolume = setVolumeSig
     this.setSpeed = setSpeedSig
     this.setZoom = setZoomSig
+    this.setThemeIdSig = setThemeId
 
     // One Solid root hosts the three sibling views (TopStrip, HUD, KeyHint).
     // Single owner tree, single error-boundary scope, single schedule cycle —
@@ -213,13 +216,18 @@ export class Controls {
             midiMenuLabel={() => getMidiMenuLabel(uiStore.midi.status, uiStore.midi.deviceName)}
             pedal={() => uiStore.pedal}
             dim={dimTopStrip}
+            waitEnabled={() => opts.waitEnabled?.() ?? false}
+            sheetVisible={() => opts.sheetVisible?.() ?? false}
+            isLight={() => themeId() === 'light'}
             onHome={() => opts.onHome?.()}
             onMode={(m) => opts.onModeRequest?.(m)}
             onOpenFile={() => opts.onOpenFile?.()}
             onTracks={() => opts.onOpenTracks?.()}
             onMidi={() => opts.onMidiConnect?.()}
             onRecord={() => opts.onRecord?.()}
-            onLearnThis={() => opts.onLearnThis?.()}
+            onToggleWait={() => opts.onToggleWait?.()}
+            onToggleSheet={() => opts.onToggleSheet?.()}
+            onToggleTheme={() => opts.onToggleTheme?.()}
             registerEl={(el) => {
               this.topStripEl = el
               this.setupCompactObserver(el)
@@ -228,26 +236,20 @@ export class Controls {
               this.tracksBtn = el
             }}
           />
-          <LearnCoachmark
-            eligible={() =>
-              mode() === 'play' && hasFile() && status() !== 'loading' && status() !== 'exporting'
-            }
-            onShow={() => setLearnCoachmarkSeen(true)}
-          />
           <ExportCoachmark
             eligible={() =>
-              // After the Learn bubble, never alongside it.
-              learnCoachmarkSeen() &&
-              mode() === 'play' &&
-              hasFile() &&
-              status() !== 'loading' &&
-              status() !== 'exporting'
+              mode() === 'play' && hasFile() && status() !== 'loading' && status() !== 'exporting'
             }
           />
           <HudView
             mode={mode}
             status={status}
-            showPlayHud={() => mode() === 'play' && hasFile() && status() !== 'loading'}
+            showPlayHud={() =>
+              mode() === 'play' &&
+              hasFile() &&
+              status() !== 'loading' &&
+              !(opts.waitEnabled?.() ?? false)
+            }
             showLiveHud={() => mode() === 'live'}
             playing={() => status() === 'playing'}
             instrumentLoading={instrumentLoading}
@@ -374,10 +376,10 @@ export class Controls {
               the coachmark's onMount looks it up. */}
           <DragCoachmark
             eligible={() =>
-              // Stagger behind the Learn coachmark so two bubbles don't fight
-              // for attention. Only show when the HUD is actually visible
-              // (drag handle lives on it) and the user hasn't already dragged.
-              learnCoachmarkSeen() &&
+              // Only show when a HUD is actually visible (drag handle
+              // lives on it), the main play HUD isn't replaced by the wait
+              // HUD, and the user hasn't already dragged.
+              !(opts.waitEnabled?.() ?? false) &&
               !hudHasDragged() &&
               hasFile() &&
               status() !== 'loading' &&
@@ -466,17 +468,24 @@ export class Controls {
           this.lastDisplaySec = sec
         }
 
-        const pct = dur > 0 ? Math.min((t / dur) * 100, 100) : 0
-        if (Math.abs(pct - this.lastFillPct) >= 0.1) {
+        // Throttled to 0.1% deltas, but the final approach snaps to 100 so
+        // the throttled fill always lands full instead of sticking at 99.9%
+        // and jumping back to 0 on the wrap below.
+        const raw = dur > 0 ? (t / dur) * 100 : 0
+        const pct = dur <= 0 ? 0 : raw >= 99.95 ? 100 : Math.min(raw, 100)
+        if (pct === 100 ? this.lastFillPct !== 100 : Math.abs(pct - this.lastFillPct) >= 0.1) {
           // @reactive-scrubber-forbidden — see docs/done/SOLID_MIGRATION_PLAN.md §2 rule 4
-          this.scrubber.style.setProperty('--pct', `${pct.toFixed(1)}%`)
+          this.setScrubFill(pct)
           this.lastFillPct = pct
         }
 
         if (dur > 0 && t >= dur) {
-          opts.services.clock.pause()
+          // Loop the piece instead of stopping at the end — playback wraps
+          // to the top and keeps going (loop regions, when set, wrap in
+          // the wait controller / sheet before this line is ever reached).
+          this.invalidateTimeCache()
           opts.services.clock.seek(0)
-          store.setState('status', 'ready')
+          opts.onSeek?.(0)
         }
       }),
     )
@@ -492,6 +501,9 @@ export class Controls {
 
   updateThemeDot(_color: string): void {}
   updateThemeLabel(_name: string): void {}
+  updateThemeId(id: string): void {
+    this.setThemeIdSig(id)
+  }
   updateInstrument(_name: string): void {}
   updateParticleStyle(_name: string): void {}
   updateChordOverlayState(_on: boolean): void {}
@@ -633,6 +645,10 @@ export class Controls {
   private handlePlayClick(): void {
     const { store, clock } = this.opts.services
     if (store.state.mode !== 'play') return
+    if (this.opts.onPlayToggle) {
+      this.opts.onPlayToggle()
+      return
+    }
     const s = store.state.status
     if (s === 'playing') {
       clock.pause()
@@ -837,10 +853,20 @@ export class Controls {
     this.hudWake?.()
   }
 
+  // Single writer for the scrubber fill: --pct keeps the legacy % contract
+  // (gradient stops, tests), --fill is the unitless 0..1 fraction so the
+  // webkit track gradient can inset by half a thumb and end exactly under
+  // the thumb center like Firefox's native ::-moz-range-progress does.
+  private setScrubFill(pct: number): void {
+    const clamped = Math.max(0, Math.min(100, pct))
+    this.scrubber.style.setProperty('--pct', `${clamped.toFixed(1)}%`)
+    this.scrubber.style.setProperty('--fill', `${(clamped / 100).toFixed(4)}`)
+  }
+
   private updateFill(t: number): void {
     const dur = this.opts.services.store.state.duration
     const pct = dur > 0 ? Math.min((t / dur) * 100, 100) : 0
-    this.scrubber.style.setProperty('--pct', `${pct}%`)
+    this.setScrubFill(pct)
   }
 
   private invalidateTimeCache(): void {

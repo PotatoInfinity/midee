@@ -28,7 +28,11 @@ export class NoteRenderer {
   private trackGraphics = new Map<string, Graphics>()
   private glowContainer: Container
   private glowGraphics: Graphics
-  private glowFilter: GlowFilter
+  // Null when the theme wants no glow (distance/strength 0): pixi-filters'
+  // GlowFilter compiles `ANGLE_STEP_SIZE = min(Infinity, …)` for distance 0,
+  // which fails shader compilation every frame. Skipping the filter entirely
+  // is also faster — the flat Clean/Light look needs no bloom.
+  private glowFilter: GlowFilter | null = null
   private bakedGlow: BakedGlow
   private glowMode: GlowMode = 'filter'
   // Pitch-class labels ("E", "F♯") on the bars — opt-in, sits above the glow
@@ -54,13 +58,9 @@ export class NoteRenderer {
     this.glowContainer = new Container()
     this.glowContainer.label = 'note-glow'
 
-    this.glowFilter = new GlowFilter({
-      distance: theme.noteGlowDistance,
-      outerStrength: theme.noteGlowStrength,
-      innerStrength: 0,
-      color: 0xffffff,
-      quality: GLOW_QUALITY,
-    })
+    // The filter instance itself is built lazily in updateTheme() — themes
+    // with zero glow (Clean/Light) never create one.
+    this.glowFilter = null
 
     // Halo sprites (baked mode) sit under the struck-note overlay rects.
     this.bakedGlow = new BakedGlow(renderer)
@@ -77,7 +77,8 @@ export class NoteRenderer {
   // sprites under the same rects. Bakes are freed when leaving 'baked'.
   private applyGlowMode(mode: GlowMode): void {
     this.glowMode = mode
-    this.glowContainer.filters = mode === 'filter' ? [this.glowFilter] : null
+    this.glowContainer.filters =
+      mode === 'filter' && this.glowFilter ? [this.glowFilter] : null
     this.bakedGlow.container.visible = mode === 'baked'
     if (mode === 'filter') this.bakedGlow.release()
   }
@@ -178,9 +179,14 @@ export class NoteRenderer {
         const h = Math.max(noteBottom - noteTop, 3)
         const y = noteTop
 
-        // Velocity → alpha (0.5 minimum so faint notes are still visible)
+        // Velocity → alpha (0.5 minimum so faint notes are still visible).
+        // Melt into the now-line over the last 14 px instead of blinking
+        // out — the consumption reads as one smooth motion synced to the
+        // hit.
+        const melt = nowLineY - noteTop < 14 ? Math.max(0.12, (nowLineY - noteTop) / 14) : 1
         const alpha =
-          (0.5 + note.velocity * 0.5) * (practiceInactive ? PRACTICE_INACTIVE_ALPHA_SCALE : 1)
+          (0.5 + note.velocity * 0.5) * (practiceInactive ? PRACTICE_INACTIVE_ALPHA_SCALE : 1) *
+          melt
 
         const active =
           !practiceInactive && note.time <= currentTime && note.time + note.duration > currentTime
@@ -214,7 +220,7 @@ export class NoteRenderer {
           note.time + note.duration >= currentTime
         ) {
           this.glowGraphics.roundRect(x, y, w, h, noteRadius)
-          this.glowGraphics.fill({ color: noteColor, alpha: ACTIVE_NOTE_ALPHA })
+          this.glowGraphics.fill({ color: noteColor, alpha: ACTIVE_NOTE_ALPHA * melt })
           baked?.add(x, y, w, h, noteColor)
           sumR += colorR
           sumG += colorG
@@ -233,7 +239,7 @@ export class NoteRenderer {
         (Math.round(sumG / activeCount) << 8) |
         Math.round(sumB / activeCount)
       if (baked) baked.end(glowTint === 'average' ? avgColor : null)
-      else this.glowFilter.color = avgColor
+      else if (this.glowFilter) this.glowFilter.color = avgColor
       this.glowContainer.visible = true
     } else {
       baked?.end(null)
@@ -258,17 +264,26 @@ export class NoteRenderer {
     }
     // WebGL bakes distance into the shader; assigning the uniform alone only
     // changes padding. Recreate on radius changes so theme switching is real.
-    if (this.glowFilter.distance !== theme.noteGlowDistance) {
-      this.glowFilter.destroy()
+    // Zero-glow themes never get a filter instance — distance 0 compiles to a
+    // division-by-zero shader that fails every frame.
+    const wantGlow = theme.noteGlowDistance > 0 && theme.noteGlowStrength > 0
+    if (wantGlow && (!this.glowFilter || this.glowFilter.distance !== theme.noteGlowDistance)) {
+      this.glowFilter?.destroy()
       this.glowFilter = new GlowFilter({
         distance: theme.noteGlowDistance,
         outerStrength: theme.noteGlowStrength,
         innerStrength: 0,
+        color: 0xffffff,
         quality: GLOW_QUALITY,
       })
-      if (this.glowMode === 'filter') this.glowContainer.filters = [this.glowFilter]
+    } else if (!wantGlow && this.glowFilter) {
+      this.glowFilter.destroy()
+      this.glowFilter = null
     }
-    this.glowFilter.outerStrength = theme.noteGlowStrength
+    if (this.glowMode === 'filter') {
+      this.glowContainer.filters = this.glowFilter ? [this.glowFilter] : null
+    }
+    if (this.glowFilter) this.glowFilter.outerStrength = theme.noteGlowStrength
     // Baked halos re-bake themselves when the glow params change (begin()).
   }
 
@@ -284,7 +299,8 @@ export class NoteRenderer {
 
   destroy(): void {
     this.material?.destroy()
-    this.glowFilter.destroy()
+    this.glowFilter?.destroy()
+    this.glowFilter = null
     this.bakedGlow.destroy()
     this.container.destroy({ children: true })
   }

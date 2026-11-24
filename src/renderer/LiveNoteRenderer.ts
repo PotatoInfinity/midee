@@ -26,7 +26,9 @@ export class LiveNoteRenderer {
   private baseGraphics: Graphics
   private glowContainer: Container
   private glowGraphics: Graphics
-  private glowFilter: GlowFilter
+  // Null when the theme wants no glow (see NoteRenderer — a zero-distance
+  // GlowFilter fails shader compilation every frame).
+  private glowFilter: GlowFilter | null = null
   private material: NoteMaterial | null = null
   private materialId: NoteMaterialId | undefined
 
@@ -40,14 +42,7 @@ export class LiveNoteRenderer {
     this.glowContainer = new Container()
     this.glowContainer.label = 'live-notes-glow'
 
-    this.glowFilter = new GlowFilter({
-      distance: theme.noteGlowDistance,
-      outerStrength: theme.noteGlowStrength,
-      innerStrength: 0,
-      color: 0xffffff,
-      quality: 0.3,
-    })
-    this.glowContainer.filters = [this.glowFilter]
+    // Filter instance built lazily in updateTheme() below.
 
     this.glowGraphics = new Graphics()
     this.glowContainer.addChild(this.glowGraphics)
@@ -114,7 +109,7 @@ export class LiveNoteRenderer {
     for (const note of primary.heldNotes.values())
       this.drawOne(note, currentTime, pixelsPerSecond, nowY, viewport, color, true, 1)
 
-    this.glowFilter.color = color
+    if (this.glowFilter) this.glowFilter.color = color
     this.glowContainer.visible = !this.material && primary.heldNotes.size > 0
     this.material?.end()
   }
@@ -174,17 +169,22 @@ export class LiveNoteRenderer {
       this.material = theme.noteMaterial ? createNoteMaterial(theme.noteMaterial) : null
       if (this.material) this.container.addChildAt(this.material.container, 1)
     }
-    if (this.glowFilter.distance !== theme.noteGlowDistance) {
-      this.glowFilter.destroy()
+    const wantGlow = theme.noteGlowDistance > 0 && theme.noteGlowStrength > 0
+    if (wantGlow && (!this.glowFilter || this.glowFilter.distance !== theme.noteGlowDistance)) {
+      this.glowFilter?.destroy()
       this.glowFilter = new GlowFilter({
         distance: theme.noteGlowDistance,
         outerStrength: theme.noteGlowStrength,
         innerStrength: 0,
+        color: 0xffffff,
         quality: 0.3,
       })
-      this.glowContainer.filters = [this.glowFilter]
+    } else if (!wantGlow && this.glowFilter) {
+      this.glowFilter.destroy()
+      this.glowFilter = null
     }
-    this.glowFilter.outerStrength = theme.noteGlowStrength
+    this.glowContainer.filters = this.glowFilter ? [this.glowFilter] : null
+    if (this.glowFilter) this.glowFilter.outerStrength = theme.noteGlowStrength
   }
 
   clear(): void {
@@ -196,7 +196,8 @@ export class LiveNoteRenderer {
 
   destroy(): void {
     this.material?.destroy()
-    this.glowFilter.destroy()
+    this.glowFilter?.destroy()
+    this.glowFilter = null
     this.container.destroy({ children: true })
   }
 }

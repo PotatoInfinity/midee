@@ -1029,7 +1029,6 @@ body.coachmark-open #top-strip.strip--dim {
    Label span is the SECOND child (`> span + span`); the first holds the icon. */
 #top-strip.ts-compact #ts-open > span + span,
 #top-strip.ts-compact #ts-tracks > span + span,
-#top-strip.ts-compact #ts-learn-this > span + span,
 #top-strip.ts-compact-export #ts-record > span + span,
 #top-strip.ts-compact .ts-midi-label,
 #top-strip.ts-compact .ts-customize-label {
@@ -1037,7 +1036,6 @@ body.coachmark-open #top-strip.strip--dim {
 }
 #top-strip.ts-compact #ts-open,
 #top-strip.ts-compact #ts-tracks,
-#top-strip.ts-compact #ts-learn-this,
 #top-strip.ts-compact-export #ts-record {
   padding: 0 10px;
   gap: 0;
@@ -3692,11 +3690,16 @@ body.coachmark-open #top-strip.strip--dim {
   min-width: 0;
   -webkit-appearance: none;
   appearance: none;
+  /* Fill edge tracks the thumb center: the 14px thumb travels inset 7px at
+     each end, so a plain --pct stop overshoots it (and never quite reads
+     full). --fill is the unitless 0..1 fraction set beside --pct in
+     Controls.setScrubFill; Firefox needs no such help — its native
+     ::-moz-range-progress already ends at the thumb center. */
   background: linear-gradient(
     to right,
     var(--accent) 0,
-    var(--accent) var(--pct, 0%),
-    rgba(255, 255, 255, 0.07) var(--pct, 0%),
+    var(--accent) calc(7px + (100% - 14px) * var(--fill, 0)),
+    rgba(255, 255, 255, 0.07) calc(7px + (100% - 14px) * var(--fill, 0)),
     rgba(255, 255, 255, 0.07) 100%
   );
   border-radius: var(--r-pill);
@@ -8725,4 +8728,469 @@ body.appearance-open #top-strip.strip--dim {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+/* ─────────────────────────────────────────
+   Wait HUD (minimal, no overlap) + sheet stage
+   Wait lives inside Play; the old play-along HUD's crowded
+   transport+stats+options column is replaced by two short rows.
+   ───────────────────────────────────────── */
+
+/* HUD lifts above the sheet when the sheet docks at the bottom. */
+.float-hud {
+  bottom: calc(
+    var(--keyboard-h, 120px) +
+    var(--hud-gap, 16px) +
+    var(--sheet-bottom-h, 0px) +
+    env(safe-area-inset-bottom)
+  );
+}
+.float-hud--top {
+  top: calc(84px + var(--sheet-top-h, 0px));
+}
+
+.float-hud.wait-hud {
+  max-width: min(560px, calc(100vw - 24px));
+}
+/* Practice HUD carries its own drag handle; the pin is noise here (the pill
+   auto-hides while playing and reappears on mousemove anyway). */
+.float-hud.wait-hud .float-hud__pin {
+  display: none;
+}
+.wait-hud__body {
+  display: grid;
+  grid-template-rows: auto auto;
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: 6px;
+  padding: 8px 10px;
+  min-width: 0;
+  max-width: 100%;
+}
+.wait-hud__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: nowrap;
+}
+.wait-hud__row--options {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+.wait-hud__play {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #fff;
+  cursor: pointer;
+}
+.wait-hud__scrub {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.wait-hud__time {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.8);
+  white-space: nowrap;
+}
+.wait-hud__time--muted {
+  color: rgba(255, 255, 255, 0.45);
+}
+.wait-hud__scrubber-wrap {
+  flex: 1 1 auto;
+  min-width: 64px;
+  display: flex;
+  align-items: center;
+  --pct: 0%;
+}
+.wait-hud__scrubber {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 16px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.wait-hud__scrubber::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    var(--accent) 0 var(--pct, 0%),
+    rgba(255, 255, 255, 0.16) var(--pct, 0%) 100%
+  );
+}
+.wait-hud__scrubber::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+.wait-hud__scrubber::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.16);
+}
+.wait-hud__scrubber::-moz-range-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.wait-hud__scrubber::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: none;
+  border-radius: 50%;
+  background: #fff;
+}
+.wait-hud__score {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  font-size: 14px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(255, 200, 60, 0.12);
+  border: 1px solid rgba(255, 200, 60, 0.35);
+  color: #ffd97a;
+  white-space: nowrap;
+}
+.wait-hud__pill {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.wait-hud__pill[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-glow);
+}
+.wait-hud__speed {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  font-size: 12.5px;
+}
+.wait-hud__mini {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+/* Stage split: sheet pane + divider + roll close. */
+#sheet-pane {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 22%),
+    var(--sheet-bg, #0a0a12);
+  border-top: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  box-shadow:
+    0 -12px 40px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  /* Pane height is set inline by StageLayout; clip the canvas to it so the
+     bottom staff can never bleed under the divider / keyboard / HUD. */
+  overflow: hidden;
+}
+.sheet-head {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.055),
+    rgba(255, 255, 255, 0.015)
+  );
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+.sheet-head .sheet-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--sheet-fg, rgba(255, 255, 255, 0.55));
+}
+/* Grip doubles as the swap-drag handle — full-strength ink so it reads as
+   interactive, not decoration. */
+.sheet-head .sheet-grip {
+  color: var(--sheet-fg-strong, #fff);
+  opacity: 0.85;
+}
+.sheet-head .sheet-grip:hover {
+  opacity: 1;
+}
+.sheet-head button {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--sheet-fg, rgba(255, 255, 255, 0.65));
+  cursor: pointer;
+  font-size: 13px;
+}
+.sheet-head button:hover {
+  background: var(--sheet-hover, rgba(255, 255, 255, 0.08));
+  border-color: rgba(127, 127, 127, 0.25);
+  color: var(--sheet-fg-strong, #fff);
+}
+#sheet-body {
+  pointer-events: auto;
+  /* Flex child of the fixed-height pane (header is a fixed 32px above it);
+     overflow hidden + exact resize() dims keep the canvas inside the body so
+     the bottom staff never hides under the pane edge. */
+  overflow: hidden;
+  min-height: 0;
+  /* Quiet vignette centers the grand staff: edges fall back so the
+     playhead window reads first, like Simply's focused stave. */
+  background:
+    radial-gradient(120% 95% at 50% 48%, rgba(255, 255, 255, 0.035), transparent 62%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 32%);
+}
+#sheet-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  /* CSS size == body box; the backing store is cssW*dpr via resize() +
+     setTransform, so 1 CSS px == 1 canvas unit and nothing stretches. */
+  width: 100%;
+  height: 100%;
+}
+#stage-divider {
+  pointer-events: auto;
+  /* Transparent track: only the handle pill paints, so the 12px hit area
+     (straddling the boundary via margin-top: -6px) never covers pane
+     content with a visible bar. */
+  background: transparent;
+  touch-action: none;
+}
+/* Visible grab handle: brighter pill that lights up in the accent on hover,
+   so the resize affordance reads without hunting. Geometry (12px hit area,
+   negative margin) stays inline in stageLayout; this owns the paint. */
+#stage-divider .stage-divider-handle {
+  display: block;
+  width: 64px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.32);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
+  transition:
+    background 0.15s ease,
+    box-shadow 0.15s ease,
+    width 0.15s ease;
+}
+#stage-divider:hover .stage-divider-handle {
+  width: 84px;
+  background: var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+#roll-close {
+  pointer-events: auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(7, 7, 15, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.75);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* Icon-only top-bar pills (wait clock, sheet). */
+.ts-pill--wait,
+.ts-pill--sheet {
+  padding-left: 0;
+  padding-right: 0;
+  width: 32px;
+  justify-content: center;
+}
+/* Icon-centering: every icon slot is an inline-flex box with zero line box,
+   and every injected SVG is block-level so the inline baseline gap can't push
+   the glyph off-center. Covers ts-pills (wait clock + sheet note), the wait
+   HUD play button + pill, float-hud drag/pin/close buttons, the reopen icon,
+   the sheet loop remove button, and the roll close button. */
+.ts-pill > span[aria-hidden],
+.wait-hud__pill > span[aria-hidden],
+.wait-hud__play-glyph,
+.float-hud__reopen-icon,
+.sheet-loop-x,
+#roll-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+.ts-pill svg,
+.wait-hud__play svg,
+.wait-hud__pill svg,
+.float-hud__drag svg,
+.float-hud__pin svg,
+.float-hud__close svg,
+.hud-close-btn svg,
+.float-hud__reopen-icon svg,
+.sheet-loop-x svg,
+#roll-close svg,
+.sheet-head button svg {
+  display: block;
+  flex-shrink: 0;
+}
+.wait-hud__play-glyph {
+  width: 14px;
+  height: 14px;
+}
+
+/* Loop remove button inside the sheet loop band: a 26px accent pill pinned
+   to the top of the visible band (JS centers it horizontally), high-contrast
+   on both dark glass and paper. */
+.sheet-loop-x {
+  position: absolute;
+  top: 8px;
+  z-index: 5;
+  transform: translateX(-50%);
+  min-width: 26px;
+  height: 26px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--accent);
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  color: #0a0a14;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  box-shadow:
+    0 2px 10px var(--accent-glow),
+    0 1px 4px rgba(0, 0, 0, 0.5);
+  transition:
+    transform 0.12s var(--ease-spring),
+    filter 0.12s ease;
+}
+.sheet-loop-x:hover {
+  filter: brightness(1.1);
+  transform: translateX(-50%) scale(1.08);
+}
+
+/* Mode cluster: Play/Live switch + light/dark toggle in one grid track.
+   The strip grid has exactly four tracks (home · cluster · status · end),
+   so the toggle must not be a top-level child — that would wrap a second
+   row over the roll. */
+.ts-mode-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* ── Light stage: paper top strip ─────────────────────────────
+   The strip is dark glass by default; over the Light stage it flips to a
+   bright pill so labels stay legible. Only the strip is re-skinned — HUDs
+   and chrome stay dark glass, which reads fine on paper. */
+body.theme-light #top-strip {
+  background: rgba(255, 255, 255, 0.78);
+  border-color: rgba(35, 40, 50, 0.12);
+  box-shadow:
+    0 20px 48px rgba(35, 40, 50, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.65);
+}
+body.theme-light .ts-home-name,
+body.theme-light .ts-status-title {
+  color: #232833;
+}
+body.theme-light .ts-status-kicker,
+body.theme-light .ts-midi-label,
+body.theme-light .ts-pill,
+body.theme-light .ts-record-btn,
+body.theme-light .ts-mode-seg {
+  color: rgba(35, 40, 50, 0.66);
+}
+body.theme-light .ts-mode-seg.is-active,
+body.theme-light .ts-mode-seg.is-active:hover {
+  color: #1a1d26;
+}
+body.theme-light .ts-home:hover,
+body.theme-light .ts-mode-seg:hover,
+body.theme-light .ts-pill:hover {
+  background: rgba(35, 40, 50, 0.06);
+}
+body.theme-light .ts-mode-switch {
+  background: rgba(35, 40, 50, 0.06);
+  border-color: rgba(35, 40, 50, 0.1);
+}
+body.theme-light .ts-mode-thumb {
+  background: linear-gradient(180deg, #ffffff, #edf0f4);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 2px 6px rgba(35, 40, 50, 0.28);
+}
+body.theme-light .ts-pedal {
+  color: rgba(35, 40, 50, 0.6);
+}
+
+/* ── Light stage: paper sheet pane ──────────────────────────────
+   The sheet-head border/background are white tints by default — invisible
+   on the paper stage. Re-skin in slate so the pane header and its shadow
+   read as deliberately paper, matching the cream canvas paint. */
+body.theme-light #sheet-pane {
+  border-top-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow:
+    0 -12px 40px rgba(35, 40, 50, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+body.theme-light .sheet-head {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.85),
+    rgba(35, 40, 50, 0.045)
+  );
+  border-bottom: 1px solid rgba(35, 40, 50, 0.12);
+}
+body.theme-light .sheet-head .sheet-title {
+  color: rgba(35, 40, 50, 0.6);
+}
+body.theme-light #sheet-body {
+  background:
+    radial-gradient(120% 95% at 50% 48%, rgba(35, 40, 50, 0.05), transparent 62%),
+    linear-gradient(180deg, rgba(35, 40, 50, 0.03), transparent 32%);
+}
+body.theme-light #stage-divider .stage-divider-handle {
+  background: rgba(35, 40, 50, 0.35);
+  box-shadow: 0 1px 6px rgba(35, 40, 50, 0.25);
+}
+body.theme-light #stage-divider:hover .stage-divider-handle {
+  background: var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow);
 }

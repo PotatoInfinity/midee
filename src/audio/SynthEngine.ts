@@ -8,7 +8,7 @@ import {
   type InstrumentRuntime,
   midiToNoteName,
 } from './instruments'
-import { setMasterVolume } from './masterBus'
+import { isMusicDucked, setMasterVolume, setMusicDucked } from './masterBus'
 
 export type { InstrumentId, InstrumentInfo } from './instruments'
 export { INSTRUMENTS } from './instruments'
@@ -45,7 +45,15 @@ export class SynthEngine implements AudioEngine {
   private scheduledPart: any | null = null
   private _speed = 1
   private scheduledFromTime = 0
+  // Pause-time snapshot of the transport cursor + the speed in effect then.
+  // Captured in pause() BEFORE transport.pause() freezes the clock, so both
+  // resume checks in play() share one predicate that stays valid when
+  // setSpeed lands mid-pause (re-scaling the OLD cursor at the NEW speed
+  // would point at the wrong musical moment). Cleared on stop()/rebuild.
+  private pausedTransportSeconds: number | null = null
+  private pausedSpeed = 1
   private readyPromise: Promise<void> = Promise.resolve()
+  private readyResolved = true
   private liveWarmupStarted = false
   // Latest-wins guard for `play()`. `play()` is async (awaits readyPromise +
   // Tone.start) and can be racing against a subsequent `pause()`. Without
@@ -66,7 +74,10 @@ export class SynthEngine implements AudioEngine {
     }
     // A new file's tracks are unrelated to whatever the user muted previously.
     this.disabledTrackIds.clear()
-    this.readyPromise = this.ensureInstrument(this.currentId).then(() => undefined)
+    this.readyResolved = false
+    this.readyPromise = this.ensureInstrument(this.currentId).then(() => {
+      this.readyResolved = true
+    })
     return this.readyPromise
   }
 
@@ -92,7 +103,9 @@ export class SynthEngine implements AudioEngine {
     // Release anything currently sounding on the old instrument
     this.instruments.get(this.currentId)?.releaseAll()
     this.currentId = id
+    this.readyResolved = false
     await this.ensureInstrument(id)
+    this.readyResolved = true
   }
 
   get instrument(): InstrumentId {
@@ -132,20 +145,43 @@ export class SynthEngine implements AudioEngine {
   async play(fromTime: number): Promise<void> {
     if (!this.midi) return
     const gen = ++this.playGeneration
-    await this.readyPromise
-    await toneStart()
-    // A pause() or a newer play() happened during the awaits — abandon this
-    // invocation so we don't resurrect transport audio against user intent.
-    if (gen !== this.playGeneration) return
-
     const transport = getTransport()
-    if (transport.state === 'paused' && Math.abs(fromTime - this.scheduledFromTime) < 0.05) {
-      transport.start()
-      return
+
+    // Any fresh start restores full level first — a hushed bus must never
+    // swallow the downbeat.
+    this.unduck()
+
+    // Fast resume: the transport is paused at (nearly) the requested spot
+    // (wait-mode releases, pause→play without seeking). Restarting in place
+    // skips the full Part rebuild + async gap, which read as late,
+    // stuttering audio on every chord. Uses the pause()-time snapshot, not a
+    // live transport.seconds read, so a mid-pause setSpeed can't move the
+    // resume point.
+    if (this.tryResume(fromTime)) return
+
+    // Fast path: instrument ready and the context running means the awaits
+    // below resolve to no-ops — skipping them starts the transport in the
+    // same task as the caller's clock.play(), so visuals and audio share
+    // the same start instant instead of drifting apart by the await gap.
+    if (!this.readyResolved || !this.contextRunning()) {
+      await this.readyPromise
+      await toneStart()
+      // A pause() or a newer play() happened during the awaits — abandon this
+      // invocation so we don't resurrect transport audio against user intent.
+      if (gen !== this.playGeneration) return
     }
+
+    // Post-await resume: the SAME single predicate as the fast path. The
+    // pre-await check misses when play() was already parked at `await
+    // toneStart()` before the pause landed; re-checking here (after the
+    // generation guard) resumes in place all the same instead of rebuilding.
+    if (this.tryResume(fromTime)) return
 
     this.clearScheduled()
     transport.stop()
+    // A rebuild invalidates the pause snapshot — the new Part starts at
+    // fromTime, and a stale snapshot would resume into the old position.
+    this.pausedTransportSeconds = null
     transport.position = 0
     this.scheduledFromTime = fromTime
 
@@ -214,8 +250,36 @@ export class SynthEngine implements AudioEngine {
     // Bump the generation so any in-flight `play()` aborts before it can
     // reach `transport.start()` and resurrect audio after the pause.
     this.playGeneration++
-    getTransport().pause()
+    const transport = getTransport()
+    // Snapshot the cursor + speed BEFORE pausing: after transport.pause() the
+    // seconds readout is frozen, and a later setSpeed must not rescale this
+    // (musical) position. tryResume() consumes the snapshot.
+    this.pausedTransportSeconds = transport.seconds
+    this.pausedSpeed = this._speed > 0 ? this._speed : 1
+    transport.pause()
     this.releaseAllInstruments()
+  }
+
+  // Hush the music bus (~50 ms fade) so release envelopes and reverb tails
+  // can't ring on after an explicit stop. Only for deliberate user stops and
+  // surface resets — wait-mode holds never hush, so the player's own presses
+  // stay audible while hunting the chord. `play()` / `seek()` / live input
+  // restore full level via `unduck()`.
+  hush(): void {
+    setMusicDucked(true)
+  }
+
+  unduck(): void {
+    if (isMusicDucked()) setMusicDucked(false)
+  }
+
+  private contextRunning(): boolean {
+    try {
+      const raw = getContext().rawContext as AudioContext | undefined
+      return !!raw && raw.state === 'running'
+    } catch {
+      return false
+    }
   }
 
   seek(time: number): void {
@@ -225,6 +289,9 @@ export class SynthEngine implements AudioEngine {
     this.playGeneration++
     getTransport().stop()
     this.clearScheduled()
+    // Seeking parks the transport at a new spot — a pause snapshot (if any)
+    // belongs to the old one.
+    this.pausedTransportSeconds = null
     this.releaseAllInstruments()
     if (wasPlaying) void this.play(time)
   }
@@ -249,6 +316,9 @@ export class SynthEngine implements AudioEngine {
 
   liveNoteOn(pitch: number, velocity: number): void {
     this.primeLiveInput()
+    // A fresh attack always restores full level — noodling while paused
+    // (after an explicit hush) must be heard.
+    this.unduck()
     const inst = this.instruments.get(this.currentId)
     if (!inst) return // still loading — first notes may drop, acceptable tradeoff
     inst.triggerAttack(midiToNoteName(pitch), immediate(), velocity)
@@ -287,6 +357,28 @@ export class SynthEngine implements AudioEngine {
 
   // ── Scheduled playback (internal) ──────────────────────────────────────
 
+  // Musical position frozen at pause(): the Part was scheduled from
+  // scheduledFromTime and the transport had advanced pausedTransportSeconds
+  // of transport time at pausedSpeed. Null when there is nothing resumable
+  // (never paused, or stop()/rebuild/resume cleared the snapshot).
+  private pausedPosition(): number | null {
+    if (!this.scheduledPart || this.pausedTransportSeconds === null) return null
+    return this.scheduledFromTime + this.pausedTransportSeconds * this.pausedSpeed
+  }
+
+  // Single resume predicate shared by BOTH resume paths in play(). Restarts
+  // the paused transport in place when fromTime lands within 80 ms of the
+  // pause-time position — no Part rebuild, no async gap.
+  private tryResume(fromTime: number): boolean {
+    const transport = getTransport()
+    if (transport.state !== 'paused') return false
+    const pos = this.pausedPosition()
+    if (pos === null || Math.abs(fromTime - pos) >= 0.08) return false
+    transport.start()
+    this.pausedTransportSeconds = null
+    return true
+  }
+
   private clearScheduled(): void {
     if (this.scheduledPart) {
       this.scheduledPart.stop(0)
@@ -303,6 +395,7 @@ export class SynthEngine implements AudioEngine {
   dispose(): void {
     this.clearScheduled()
     getTransport().stop()
+    this.pausedTransportSeconds = null
     for (const inst of this.instruments.values()) inst.dispose()
     this.instruments.clear()
   }

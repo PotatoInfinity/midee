@@ -268,6 +268,31 @@ export const icons = {
 
   // Forward chevron — used by the intervals quiz next/finish button.
   next: (size: Size = 12): string => svgStroke(size, `<polyline points="9 6 15 12 9 18"/>`, 1.8),
+
+  // Simple clock for wait-mode toggle in the top bar. Stays identical
+  // whether wait is on or off — the top bar itself never changes shape.
+  waitClock: (size: Size = 14): string =>
+    svgStroke(size, `<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/>`, 1.9),
+
+  // Single eighth-note for the sheet toggle — unmistakable at 14px, unlike
+  // the staff-lines glyph it replaces.
+  sheet: (size: Size = 14): string =>
+    svgStroke(
+      size,
+      `<ellipse cx="9" cy="17" rx="3.4" ry="2.7" transform="rotate(-20 9 17)" fill="currentColor" stroke="none"/><line x1="12.1" y1="16.4" x2="12.1" y2="4"/><path d="M12.1 4c3.4 0.4 4.9 2.2 5.2 5.3-1.7-1.5-3.4-2-5.2-2.1" fill="none"/>`,
+      1.6,
+    ),
+
+  // Sun / moon for the light/dark toggle next to the mode switch.
+  sun: (size: Size = 14): string =>
+    svgStroke(
+      size,
+      `<circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/><line x1="4.5" y1="4.5" x2="6.5" y2="6.5"/><line x1="17.5" y1="17.5" x2="19.5" y2="19.5"/><line x1="4.5" y1="19.5" x2="6.5" y2="17.5"/><line x1="17.5" y1="6.5" x2="19.5" y2="4.5"/>`,
+      1.9,
+    ),
+
+  moon: (size: Size = 14): string =>
+    svgStroke(size, `<path d="M20 13.5A8 8 0 0 1 10.5 4 8 8 0 1 0 20 13.5z"/>`, 1.9),
 }
 
 export type IconName = keyof typeof icons

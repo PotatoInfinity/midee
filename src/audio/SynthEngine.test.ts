@@ -25,6 +25,9 @@ const holder = vi.hoisted(() => {
   const transport = {
     state: 'stopped' as 'stopped' | 'started' | 'paused',
     position: 0 as number | string,
+    // Transport-time cursor in seconds (Tone accounts the current bpm).
+    // Tests leave it at 0 unless the case under test advances it.
+    seconds: 0,
     bpm: {
       _value: 120,
       get value() {
@@ -79,6 +82,9 @@ const holder = vi.hoisted(() => {
     }>,
     destinationVolume: { value: 0 },
     immediateTime: 0,
+    // Stateful hush flag so the hush/unduck paths are assertable: the real
+    // masterBus tracks this per context, the old no-op mock could not.
+    ducked: false,
     armStartGate,
     releaseStartGate,
     getStartPromise: () => startPromise,
@@ -112,11 +118,17 @@ vi.mock('tone', () => {
   }
 })
 
-// The master bus owns the volume node; SynthEngine only forwards the slider.
+// The master bus owns the volume node; SynthEngine only forwards the slider
+// and the pause hush. The hush mock tracks the ducked flag in the holder so
+// tests can assert hush()/unduck() transitions like the real per-context bus.
 vi.mock('./masterBus', () => ({
   setMasterVolume: (v: number) => {
     holder.destinationVolume.value = v
   },
+  isMusicDucked: () => holder.ducked,
+  setMusicDucked: vi.fn((ducked: boolean) => {
+    holder.ducked = ducked
+  }),
 }))
 
 // Fake instrument runtime that records every trigger. createInstrument is async
@@ -205,11 +217,13 @@ beforeEach(() => {
   holder.parts.length = 0
   holder.transport.state = 'stopped'
   holder.transport.position = 0
+  holder.transport.seconds = 0
   holder.transport.bpm._value = 120
   holder.transport.start.mockClear()
   holder.transport.stop.mockClear()
   holder.transport.pause.mockClear()
   holder.destinationVolume.value = 0
+  holder.ducked = false
   holder.immediateTime = 0
   instrumentTriggers.length = 0
 })
@@ -358,6 +372,27 @@ describe('SynthEngine.play — latest-wins race guard', () => {
 
     expect(holder.transport.start).not.toHaveBeenCalled()
   })
+
+  it('an aborted play() leaves no Part and a later play() starts clean', async () => {
+    const midi = makeMidi([track('a', [note(60, 0)])], 120)
+    const engine = await loadedEngine(midi)
+
+    // Park a play() at the await, abort it with pause(), then play fresh.
+    holder.armStartGate()
+    const playP = engine.play(0)
+    engine.pause()
+    holder.releaseStartGate()
+    await playP
+
+    expect(holder.transport.start).not.toHaveBeenCalled()
+    expect(holder.parts.length).toBe(0)
+
+    // The abort left no resumable Part behind: a fresh play rebuilds and
+    // starts normally instead of "resuming" a phantom pause.
+    await engine.play(3)
+    expect(holder.parts.length).toBe(1)
+    expect(holder.transport.start).toHaveBeenCalledTimes(1)
+  })
 })
 
 // ── 3. binary-search note slicing at fromTime boundary ───────────────────────
@@ -471,6 +506,10 @@ describe('SynthEngine.play — binary-search slicing at fromTime', () => {
 })
 
 // ── 4. paused-resume fast path (does not rebuild the Part) ───────────────────
+//
+// Resume uses the pause()-time snapshot (transport.seconds + speed captured
+// in pause() before the clock freezes), never a live transport.seconds read
+// — so a setSpeed that lands mid-pause can't move the resume point.
 
 describe('SynthEngine.play — paused resume fast path', () => {
   it('resumes via transport.start without rebuilding the Part when fromTime matches', async () => {
@@ -480,11 +519,12 @@ describe('SynthEngine.play — paused resume fast path', () => {
     await engine.play(0)
     expect(holder.parts.length).toBe(1)
 
-    // Simulate a pause: transport goes to 'paused', scheduledFromTime stays 0.
-    holder.transport.state = 'paused'
+    // Simulate a pause with no elapsed transport time: the snapshot resume
+    // point is scheduledFromTime itself.
+    engine.pause()
     holder.transport.start.mockClear()
 
-    await engine.play(0.01) // within the 0.05 tolerance of scheduledFromTime=0
+    await engine.play(0.01) // within the resume window of scheduledFromTime=0
 
     // Fast path: just resume, no second Part built.
     expect(holder.parts.length).toBe(1)
@@ -496,11 +536,55 @@ describe('SynthEngine.play — paused resume fast path', () => {
     const engine = await loadedEngine(midi)
 
     await engine.play(0)
-    holder.transport.state = 'paused'
+    engine.pause()
 
-    await engine.play(5) // far from scheduledFromTime=0 → full rebuild
+    await engine.play(5) // far from the snapshot resume point 0 → full rebuild
 
     expect(holder.parts.length).toBe(2)
+  })
+
+  it('resume window uses transport.seconds × paused speed', async () => {
+    const midi = makeMidi([track('a', [note(60, 0)])], 120)
+    const engine = await loadedEngine(midi)
+    engine.setSpeed(2)
+
+    await engine.play(0)
+    expect(holder.parts.length).toBe(1)
+
+    // 5 transport-seconds elapsed at 2× → musical resume point is 0 + 5*2.
+    holder.transport.seconds = 5
+    engine.pause()
+    holder.transport.start.mockClear()
+
+    await engine.play(10.03) // |10.03 - 10| < 0.08 → in-place resume
+
+    expect(holder.parts.length).toBe(1)
+    expect(holder.transport.start).toHaveBeenCalledTimes(1)
+  })
+
+  it('resume after a mid-pause speed change uses the paused speed', async () => {
+    const midi = makeMidi([track('a', [note(60, 0)])], 120)
+    const engine = await loadedEngine(midi) // speed 1
+
+    await engine.play(0)
+    // 4 transport-seconds elapsed at 1× → musical resume point is 4.
+    holder.transport.seconds = 4
+    engine.pause() // snapshot: seconds=4, speed=1 → resume point 4
+    engine.setSpeed(2) // mid-pause change must not move the resume point
+    holder.transport.start.mockClear()
+
+    await engine.play(4.02) // |4.02 - 4| < 0.08 → in-place resume, no rebuild
+    expect(holder.parts.length).toBe(1)
+    expect(holder.transport.start).toHaveBeenCalledTimes(1)
+
+    // The new-speed rescaling of the OLD cursor (4 * 2 = 8) is not the
+    // resume point: re-pause (snapshot now seconds=4 @ speed 2 → point 8)
+    // and ask for the stale point 4 → must rebuild, not resume.
+    engine.pause()
+    holder.transport.start.mockClear()
+    await engine.play(4) // |4 - 8| = 4 → full rebuild
+    expect(holder.parts.length).toBe(2)
+    expect(holder.transport.start).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -552,5 +636,39 @@ describe('SynthEngine.play — guards', () => {
 
     expect(first.dispose).toHaveBeenCalled()
     expect(holder.parts.length).toBe(2)
+  })
+})
+
+// ── 7. hush / unduck ─────────────────────────────────────────────────────────
+
+describe('SynthEngine — hush / unduck', () => {
+  it('hush() ducks the bus; play() restores it; pause() alone never ducks', async () => {
+    const midi = makeMidi([track('a', [note(60, 0)])], 120)
+    const engine = await loadedEngine(midi)
+
+    // Wait-hold exemption: a bare pause (PracticeEngine holds the clock this
+    // way while the player hunts the chord) must not hush anything.
+    engine.pause()
+    expect(holder.ducked).toBe(false)
+
+    // Explicit stop hushes release tails and reverb…
+    engine.hush()
+    expect(holder.ducked).toBe(true)
+
+    // …and a fresh start restores full level first so the downbeat is never
+    // swallowed.
+    await engine.play(0)
+    expect(holder.ducked).toBe(false)
+  })
+
+  it('liveNoteOn() unducks so noodling while paused stays audible', async () => {
+    const midi = makeMidi([track('a', [note(60, 0)])], 120)
+    const engine = await loadedEngine(midi)
+
+    engine.hush()
+    expect(holder.ducked).toBe(true)
+
+    engine.liveNoteOn(60, 0.8)
+    expect(holder.ducked).toBe(false)
   })
 })

@@ -1,6 +1,6 @@
 import { Application, Graphics, Sprite, type Ticker } from 'pixi.js'
 import type { MasterClock } from '../core/clock/MasterClock'
-import type { MidiFile } from '../core/midi/types'
+import { MIDI_MAX, MIDI_MIN, type MidiFile } from '../core/midi/types'
 import type { LiveNoteStore } from '../midi/LiveNoteStore'
 import { BeatGrid } from './BeatGrid'
 import { type EmitCadence, scheduleEmissions } from './emitSchedule'
@@ -264,7 +264,7 @@ export class PianoRollRenderer {
     for (let pitch = 24; pitch <= 108; pitch += 12) {
       const x = this.viewport.pitchToX(pitch)
       g.rect(x, 0, 1, rollHeight)
-      g.fill({ color: 0xffffff, alpha: 0.025 })
+      g.fill({ color: this.theme.gridColor ?? 0xffffff, alpha: 0.025 })
     }
 
     // Separator line between roll and keyboard
@@ -310,6 +310,7 @@ export class PianoRollRenderer {
     this.visibleTrackIds = new Set(midi.tracks.map((t) => t.id))
     this.practiceFocusTrackIds = null
     this.noteRenderer.setTracks(midi.tracks)
+    this.fitPitchRangeToMidi()
     this.particles.clear()
     this.prevActive.clear()
     this.currActive.clear()
@@ -320,6 +321,7 @@ export class PianoRollRenderer {
     this.midi = null
     this.visibleTrackIds.clear()
     this.practiceFocusTrackIds = null
+    this.setPitchRange(MIDI_MIN, MIDI_MAX)
     this.noteRenderer.setTracks([])
     this.noteRenderer.clear()
     this.liveNoteRenderer.clear()
@@ -361,6 +363,31 @@ export class PianoRollRenderer {
   setPitchRange(min: number, max: number): void {
     this.viewport.update({ pitchMin: min, pitchMax: max })
     this.rebuildStaticLayers()
+  }
+
+  // Zoom the keyboard + roll onto the loaded piece's actual pitch range (a
+  // few keys of margin each side) so the stage space goes to the music, not
+  // empty octaves. Falls back to the full 88 on empty input.
+  fitPitchRangeToMidi(): void {
+    if (!this.midi) {
+      this.setPitchRange(MIDI_MIN, MIDI_MAX)
+      return
+    }
+    let lo = 128
+    let hi = -1
+    for (const track of this.midi.tracks) {
+      if (track.isDrum || !this.visibleTrackIds.has(track.id)) continue
+      for (const note of track.notes) {
+        if (note.pitch < lo) lo = note.pitch
+        if (note.pitch > hi) hi = note.pitch
+      }
+    }
+    if (hi < lo) {
+      this.setPitchRange(MIDI_MIN, MIDI_MAX)
+      return
+    }
+    const pad = 4
+    this.setPitchRange(Math.max(MIDI_MIN, lo - pad), Math.min(MIDI_MAX, hi + pad))
   }
 
   get pitchRange(): { min: number; max: number } {
@@ -709,6 +736,9 @@ export class PianoRollRenderer {
   }
 
   burstParticleAt(pitch: number): void {
+    // Off-range pitches have no key to burst from — without this guard the
+    // burst renders as a zero-width dot at the canvas left edge.
+    if (!this.viewport.hasKey(pitch)) return
     const w = this.viewport.pitchWidth(pitch)
     const cx = this.viewport.pitchToX(pitch) + w / 2
     const color = liveNoteColor(this.theme)

@@ -345,8 +345,8 @@ type EventMap = {
   // Customization. `method` distinguishes the topbar cycle button from a menu
   // pick. `theme` is the display name (kept for existing filters); `theme_id`
   // is the stable persisted id.
-  theme_changed: { theme: string; theme_id: string; method: 'cycle' | 'menu' }
-  particle_changed: { style: string; method: 'cycle' | 'menu' }
+  theme_changed: { theme: string; theme_id: string; method: 'cycle' | 'menu' | 'toggle' }
+  particle_changed: { style: string; method: 'cycle' | 'menu' | 'toggle' }
   instrument_changed: { from: string | undefined; to: string; method: 'cycle' | 'menu' }
   // Live commands, split by how they were invoked. The Shift+letter shortcuts
   // and the HUD buttons call the same handlers, so nothing previously recorded

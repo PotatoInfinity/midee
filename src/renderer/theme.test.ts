@@ -23,6 +23,8 @@ const EXPECTED_THEME_IDS: Record<ThemeId, true> = {
   opal: true,
   'liquid-glass': true,
   'ember-mist': true,
+  clean: true,
+  light: true,
 }
 
 const track = (colorIndex: number): MidiTrack => ({

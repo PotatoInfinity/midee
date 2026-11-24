@@ -23,6 +23,10 @@ import { expect, type Locator, type Page, test } from '@playwright/test'
 //                  `#hud-time` span is the human-readable m:ss mirror (per-second).
 //   - Seek:        set `#hud-scrubber.value` and dispatch a `change` event → the view's
 //                  onScrubberChange handler calls `clock.seek(t)` (Controls.tsx ~277).
+//   - End of piece: LOOPS — reaching `duration` seeks back to 0 and keeps playing
+//                  (Controls.tsx clock tick; the wait controller wraps loop regions
+//                  the same way via `wrapIfAtEnd`, and wraps the whole piece when
+//                  no region is set). Nothing pauses or stops at the end.
 //
 // DETERMINISM: we never assert wall-clock equality or exact frame values. Advancing
 // time is asserted with `expect.poll` + tolerance; seek is asserted within a window.
@@ -135,7 +139,7 @@ test.describe('Golden-path playback', () => {
     // advance by a large fraction of that window. This has teeth where a bare
     // ">a+0.1" check does not — a stalled or 2%-rate clock would pass the loose
     // check but fails here. Window kept short so we stay clear of the 1.95s clip
-    // end (where playback would pause/stop and make the delta meaningless).
+    // end (where playback wraps to the top and the delta would go negative).
     const a = await playhead(scrubber)
     const t0 = Date.now()
     await page.waitForTimeout(600)
@@ -208,6 +212,32 @@ test.describe('Golden-path playback', () => {
     const timeText = (await page.locator('#hud-time').textContent())?.trim() ?? ''
     expect(timeText, `hud-time: "${timeText}"`).toMatch(/^\d+:\d{2}$/)
     expect(timeText).not.toBe('0:00')
+
+    // Clean stop so the AudioContext/encoder state doesn't linger between tests.
+    await clickPlay(page)
+  })
+
+  test('reaching the end loops the piece instead of stopping', async ({ page }) => {
+    await loadFixture(page)
+
+    const scrubber = page.locator('#hud-scrubber')
+    await settlePausedAtStart(page, scrubber)
+
+    // Park near the end, then play through it: the piece must wrap to the top
+    // and keep playing (Controls clock tick seeks to 0 at duration) rather
+    // than pausing at the end.
+    await seekTo(scrubber, FIXTURE_DURATION_S - 0.4)
+    await clickPlay(page)
+    await expect.poll(() => isPlaying(page), { timeout: 3_000 }).toBe(true)
+
+    // Wait for the wrap: the playhead returns near zero while still playing.
+    await expect
+      .poll(async () => playhead(scrubber), {
+        timeout: 20_000,
+        message: 'playhead should wrap to the top at the end of the piece',
+      })
+      .toBeLessThan(0.5)
+    expect(await isPlaying(page), 'playback keeps going after the wrap').toBe(true)
 
     // Clean stop so the AudioContext/encoder state doesn't linger between tests.
     await clickPlay(page)
